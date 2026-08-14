@@ -98,6 +98,10 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
       length: number
     ) => {
       const host = this.copyFromMemory(hostPtr, family === 4 ? 4 : 16);
+      const localHost = this.copyFromMemory(
+        localHostPtr,
+        localFamily === 4 ? 4 : 16
+      );
       const datagram = this.copyFromMemory(datagramPtr, length);
       const socket = this.#udpSockets.get(handle);
 
@@ -113,10 +117,7 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
         host: formatAddress(family, host),
         port,
         local: {
-          address: formatAddress(
-            localFamily,
-            this.copyFromMemory(localHostPtr, localFamily === 4 ? 4 : 16)
-          ),
+          address: formatAddress(localFamily, localHost),
           port: localPort,
         },
         data: datagram,

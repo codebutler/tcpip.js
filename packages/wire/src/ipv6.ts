@@ -62,6 +62,10 @@ export function compressIPv6(ip: string) {
     (group) => group.replace(/^0+(?=\w)/, '') // Remove leading zeros, keep single 0
   );
 
+  if (normalizedGroups.every((group) => group === '0' || group === '')) {
+    return '::';
+  }
+
   // Find longest sequence of empty groups
   let longestZeroStart = -1;
   let longestZeroLength = 0;

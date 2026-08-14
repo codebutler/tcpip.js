@@ -1520,6 +1520,27 @@ describe('udp', () => {
     });
   });
 
+  test('reports the destination endpoint for a wildcard IPv6 UDP socket', async () => {
+    const stack = await createStack();
+    const sender = await stack.udp.open();
+    const receiver = await stack.udp.open({ port: 8082 });
+    const received = receiver.readable.getReader().read();
+
+    await sender.writable.getWriter().write({
+      host: '::1',
+      port: 8082,
+      data: new Uint8Array([8, 2]),
+    });
+
+    await expect(received).resolves.toMatchObject({
+      value: {
+        host: '::1',
+        local: { address: '::1', port: 8082 },
+        data: new Uint8Array([8, 2]),
+      },
+    });
+  });
+
   test('can receive udp datagram via tun interface', async () => {
     const stack = await createStack();
 
