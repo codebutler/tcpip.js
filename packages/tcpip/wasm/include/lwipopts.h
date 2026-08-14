@@ -8,7 +8,7 @@
 #define LWIP_NETCONN 0                                            // Disable Netconn API (assumes NO_SYS=0)
 #define LWIP_NETIF_API 0                                          // Disable network interface API (assumes NO_SYS=0)
 #define LWIP_NUM_NETIF_CLIENT_DATA 1                              // Number of client data entries in struct netif (required for bridgeif)
-// +2: bridgeif FDB aging + pc RA sender (both own a sys_timeout slot).
+// +2: bridgeif FDB aging + router-advertisement sender.
 #define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 2)
 
 // Constants used for calculations
@@ -55,14 +55,14 @@
 #define LWIP_HOOK_IP4_ROUTE_SRC(src, dest) tcpip_ip4_route(src, dest)
 #define LWIP_HOOK_IP6_ROUTE(src, dest) tcpip_ip6_route(src, dest)
 // Peek for Router Solicitations so the bridge can answer with an RA.
-#define LWIP_HOOK_IP6_INPUT(p, inp) pc_ip6_input_hook(p, inp)
+#define LWIP_HOOK_IP6_INPUT(p, inp) tcpip_ip6_input_hook(p, inp)
 struct netif;
 struct ip4_addr;
 struct ip6_addr;
 struct pbuf;
 struct netif *tcpip_ip4_route(const struct ip4_addr *src, const struct ip4_addr *dest);
 struct netif *tcpip_ip6_route(const struct ip6_addr *src, const struct ip6_addr *dest);
-int pc_ip6_input_hook(struct pbuf *p, struct netif *inp);
+int tcpip_ip6_input_hook(struct pbuf *p, struct netif *inp);
 
 // Internet Control Message Protocol (ICMP) options
 #define LWIP_ICMP 1  // Enable ICMP (ping)

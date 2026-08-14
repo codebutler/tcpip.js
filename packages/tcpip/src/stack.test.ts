@@ -236,6 +236,11 @@ describe('tun interface', () => {
       source: 'connected',
       via: tunInterface,
     });
+    await tunInterface.setRouterAdvertisements({ prefix: 'fdcb:9::/64' });
+    await expect(
+      tunInterface.setRouterAdvertisements({ prefix: 'fdcb:9::/48' })
+    ).rejects.toThrow(/IPv6 \/64/);
+    await tunInterface.setRouterAdvertisements(null);
 
     await tunInterface.removeAddress('fdcb:9::2/64');
     expect(stack.routes.lookup('fdcb:9::abcd')).toBeNull();

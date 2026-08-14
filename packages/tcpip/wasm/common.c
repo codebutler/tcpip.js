@@ -3,6 +3,7 @@
 #include "lwip/err.h"
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
+#include "ipv6_helpers.h"
 #include "macros.h"
 
 EXPORT("get_interface_mac_address")
@@ -39,6 +40,18 @@ err_t set_interface_mtu(struct netif *netif, uint16_t mtu) {
   netif->mtu6 = mtu;
 #endif
   return ERR_OK;
+}
+
+EXPORT("set_interface_router_advertisements")
+err_t set_interface_router_advertisements(struct netif *netif,
+                                          const uint8_t prefix[16]) {
+#if LWIP_IPV6
+  return tcpip_ra_set(netif, prefix);
+#else
+  LWIP_UNUSED_ARG(netif);
+  LWIP_UNUSED_ARG(prefix);
+  return ERR_IF;
+#endif
 }
 
 EXPORT("set_interface_ip4_address")

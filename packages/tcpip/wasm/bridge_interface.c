@@ -4,7 +4,6 @@
 #include "lwip/netif.h"
 #include "macros.h"
 #include "netif/bridgeif.h"
-#include "ipv6_helpers.h"
 
 EXPORT("create_bridge_interface")
 struct netif *create_bridge_interface(const uint8_t mac_address[6], const uint8_t ip4[4], const uint8_t netmask[4], struct netif *ports[], uint8_t ports_num) {
@@ -50,19 +49,11 @@ struct netif *create_bridge_interface(const uint8_t mac_address[6], const uint8_
   netif_set_up(netif);
 #if LWIP_IPV6
   netif_create_ip6_linklocal_address(netif, 1);
-  if (ip4) {
-    pc_assign_ula(netif, ip4[3]);
-  }
 #endif
 
   for (uint8_t i = 0; i < ports_num; i++) {
     bridgeif_add_port(netif, ports[i]);
   }
-
-#if LWIP_IPV6
-  /* Advertise fdcb:0:0:2::/64 + default route so guests can SLAAC. */
-  pc_ra_start(netif);
-#endif
 
   return netif;
 }
@@ -74,9 +65,6 @@ void remove_bridge_interface(struct netif *netif) {
   // bridge's MEMP_SYS_TIMEOUT slot (the pool has room for exactly one bridge),
   // so the first sys_timeout() after a remove — e.g. TCP arming a timer on an
   // inbound SYN — traps the wasm ("pool MEMP_SYS_TIMEOUT is empty").
-#if LWIP_IPV6
-  pc_ra_stop(netif);
-#endif
   bridgeif_deinit(netif);
   netif_remove(netif);
   free(netif);

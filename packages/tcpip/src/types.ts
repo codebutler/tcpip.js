@@ -105,6 +105,14 @@ export type InterfaceConfiguration = {
   addAddress(cidr: IpCidr): Promise<void>;
   removeAddress(cidr: IpCidr): Promise<void>;
   setMtu(mtu: number): Promise<void>;
+  setRouterAdvertisements(
+    options: RouterAdvertisementOptions | null
+  ): Promise<void>;
+};
+
+export type RouterAdvertisementOptions = {
+  /** Canonical IPv6 /64 advertised for SLAAC. */
+  prefix: IpCidr;
 };
 
 export type LoopbackInterface = InterfaceConfiguration & {

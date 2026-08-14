@@ -6,7 +6,6 @@
 #include "netif/etharp.h"
 #include "netif/ethernet.h"
 #include "lwip/ethip6.h"
-#include "ipv6_helpers.h"
 
 extern void register_tap_interface(struct netif *netif);
 extern void receive_frame(struct netif *netif, const uint8_t *frame, uint16_t length);
@@ -69,9 +68,6 @@ struct netif *create_tap_interface(const uint8_t mac_address[6], const uint8_t i
 #if LWIP_IPV6
   netif_create_ip6_linklocal_address(netif, 1);
   netif_ip6_addr_set_state(netif, 0, IP6_ADDR_PREFERRED);
-  if (ip4) {
-    pc_assign_ula(netif, ip4[3]);
-  }
 #endif
 
   return netif;

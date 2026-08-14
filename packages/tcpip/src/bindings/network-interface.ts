@@ -1,10 +1,11 @@
-import { formatAddress, parseInterfaceCidr } from '../ip.js';
+import { formatAddress, parseCidr, parseInterfaceCidr } from '../ip.js';
 import type { RouteTable } from '../routes.js';
 import type {
   InterfaceConfiguration,
   IpCidr,
   NetworkInterface,
   RouteHandle,
+  RouterAdvertisementOptions,
 } from '../types.js';
 import { Bindings } from './base.js';
 import type { Pointer } from './types.js';
@@ -20,6 +21,10 @@ export type NetworkInterfaceExports = {
   clear_interface_ip4_address(handle: number): void;
   add_interface_ip6_address(handle: number, address: Pointer): number;
   remove_interface_ip6_address(handle: number, address: Pointer): number;
+  set_interface_router_advertisements(
+    handle: number,
+    prefix: Pointer | null
+  ): number;
 };
 
 type AddressState = {
@@ -67,6 +72,15 @@ export abstract class VirtualNetworkInterface
 
   setMtu(mtu: number): Promise<void> {
     return getAttachedState(this).bindings.setMtu(this, mtu);
+  }
+
+  setRouterAdvertisements(
+    options: RouterAdvertisementOptions | null
+  ): Promise<void> {
+    return getAttachedState(this).bindings.setRouterAdvertisements(
+      this,
+      options
+    );
   }
 }
 
@@ -116,6 +130,7 @@ export class NetworkInterfaceBindings extends Bindings<
   detach(netInterface: NetworkInterface) {
     const state = getState(netInterface);
     if (state.detached) return;
+    this.exports.set_interface_router_advertisements(state.handle, null);
     state.detached = true;
     for (const route of state.connectedRoutes.values()) {
       route.handle.dispose();
@@ -190,6 +205,39 @@ export class NetworkInterfaceBindings extends Bindings<
     const result = this.exports.set_interface_mtu(state.handle, mtu);
     if (result !== 0) {
       throw new Error(`failed to set interface MTU: ${result}`);
+    }
+  }
+
+  async setRouterAdvertisements(
+    netInterface: InterfaceConfiguration,
+    options: RouterAdvertisementOptions | null
+  ) {
+    const state = getAttachedState(netInterface);
+    if (!options) {
+      const result = this.exports.set_interface_router_advertisements(
+        state.handle,
+        null
+      );
+      if (result !== 0) {
+        throw new Error(`failed to disable router advertisements: ${result}`);
+      }
+      return;
+    }
+
+    const prefix = parseCidr(options.prefix);
+    if (prefix.family !== 6 || prefix.prefixLength !== 64) {
+      throw new Error('router advertisements require a canonical IPv6 /64');
+    }
+    if (netInterface.mtu < 1280) {
+      throw new Error('IPv6 interfaces require an MTU of at least 1280');
+    }
+    using prefixPtr = this.copyToMemory(prefix.bytes);
+    const result = this.exports.set_interface_router_advertisements(
+      state.handle,
+      prefixPtr
+    );
+    if (result !== 0) {
+      throw new Error(`failed to enable router advertisements: ${result}`);
     }
   }
 

@@ -1,4 +1,5 @@
 node_modules/
 dist/
+packages/tcpip/wasm/*.d
 .DS_Store
 .vscode/
