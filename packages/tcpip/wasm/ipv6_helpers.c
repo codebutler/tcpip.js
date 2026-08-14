@@ -20,11 +20,18 @@ static struct netif *ra_netif = NULL;
 #define ND6_HOPLIM 255
 #define RA_CUR_HOP_LIMIT 64
 #define RA_ROUTER_LIFETIME_S 1800
-#define RA_PREFIX_VALID_S 86400
-#define RA_PREFIX_PREF_S 14400
 
 static u8_t ra_initial_left = 0;
-static ip6_addr_t ra_prefix;
+
+struct ra_prefix_config {
+  ip6_addr_t prefix;
+  u32_t valid_lifetime;
+  u32_t preferred_lifetime;
+  u8_t initial_only;
+};
+
+static struct ra_prefix_config ra_prefixes[TCPIP_RA_MAX_PREFIXES];
+static u8_t ra_prefix_count = 0;
 
 static void ra_send(struct netif *netif) {
   struct pbuf *p;
@@ -35,6 +42,8 @@ static void ra_send(struct netif *netif) {
   ip6_addr_t dest;
   u16_t ll_opt_len;
   u16_t total_length;
+  u8_t advertised_count = 0;
+  u8_t i;
 
   if (!netif || !netif_is_up(netif) || !netif_is_link_up(netif)) return;
   if (!ip6_addr_isvalid(netif_ip6_addr_state(netif, 0))) return;
@@ -43,10 +52,17 @@ static void ra_send(struct netif *netif) {
   ip6_addr_set_allnodes_linklocal(&dest);
   ip6_addr_assign_zone(&dest, IP6_MULTICAST, netif);
 
+  for (i = 0; i < ra_prefix_count; i++) {
+    if (!ra_prefixes[i].initial_only || ra_initial_left > 0) {
+      advertised_count++;
+    }
+  }
+  if (advertised_count == 0) return;
+
   ll_opt_len = (u16_t)(((netif->hwaddr_len + 2) + 7) >> 3);
   total_length =
       (u16_t)(sizeof(struct ra_header) + (ll_opt_len << 3) +
-              sizeof(struct prefix_option));
+              advertised_count * sizeof(struct prefix_option));
   p = pbuf_alloc(PBUF_IP, total_length, PBUF_RAM);
   if (!p) return;
 
@@ -65,13 +81,17 @@ static void ra_send(struct netif *netif) {
   MEMCPY(ll->addr, netif->hwaddr, netif->hwaddr_len);
 
   pi = (struct prefix_option *)((u8_t *)ll + (ll_opt_len << 3));
-  pi->type = ND6_OPTION_TYPE_PREFIX_INFO;
-  pi->length = 4;
-  pi->prefix_length = 64;
-  pi->flags = ND6_PREFIX_FLAG_ON_LINK | ND6_PREFIX_FLAG_AUTONOMOUS;
-  pi->valid_lifetime = lwip_htonl(RA_PREFIX_VALID_S);
-  pi->preferred_lifetime = lwip_htonl(RA_PREFIX_PREF_S);
-  ip6_addr_copy_to_packed(pi->prefix, ra_prefix);
+  for (i = 0; i < ra_prefix_count; i++) {
+    if (ra_prefixes[i].initial_only && ra_initial_left == 0) continue;
+    pi->type = ND6_OPTION_TYPE_PREFIX_INFO;
+    pi->length = 4;
+    pi->prefix_length = 64;
+    pi->flags = ND6_PREFIX_FLAG_ON_LINK | ND6_PREFIX_FLAG_AUTONOMOUS;
+    pi->valid_lifetime = lwip_htonl(ra_prefixes[i].valid_lifetime);
+    pi->preferred_lifetime = lwip_htonl(ra_prefixes[i].preferred_lifetime);
+    ip6_addr_copy_to_packed(pi->prefix, ra_prefixes[i].prefix);
+    pi++;
+  }
 
 #if CHECKSUM_GEN_ICMP6
   IF__NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_ICMP6) {
@@ -106,19 +126,35 @@ static void ra_stop(struct netif *netif) {
   (void)mld6_leavegroup_netif(netif, &allrouters);
   ra_netif = NULL;
   ra_initial_left = 0;
-  ip6_addr_set_zero(&ra_prefix);
+  ra_prefix_count = 0;
+  memset(ra_prefixes, 0, sizeof(ra_prefixes));
 }
 
-err_t tcpip_ra_set(struct netif *netif, const uint8_t prefix[16]) {
+err_t tcpip_ra_set(struct netif *netif, const uint8_t *prefixes,
+                   const uint32_t *valid_lifetimes,
+                   const uint32_t *preferred_lifetimes,
+                   const uint8_t *initial_only, uint8_t prefix_count) {
   ip6_addr_t allrouters;
+  u8_t i;
   if (!netif) return ERR_ARG;
-  if (!prefix) {
+  if (!prefixes || prefix_count == 0) {
     ra_stop(netif);
     return ERR_OK;
   }
+  if (!valid_lifetimes || !preferred_lifetimes || !initial_only ||
+      prefix_count > TCPIP_RA_MAX_PREFIXES) {
+    return ERR_ARG;
+  }
 
   if (ra_netif && ra_netif != netif) ra_stop(ra_netif);
-  memcpy(ra_prefix.addr, prefix, 16);
+  for (i = 0; i < prefix_count; i++) {
+    if (preferred_lifetimes[i] > valid_lifetimes[i]) return ERR_ARG;
+    memcpy(ra_prefixes[i].prefix.addr, prefixes + ((size_t)i * 16), 16);
+    ra_prefixes[i].valid_lifetime = valid_lifetimes[i];
+    ra_prefixes[i].preferred_lifetime = preferred_lifetimes[i];
+    ra_prefixes[i].initial_only = initial_only[i] ? 1 : 0;
+  }
+  ra_prefix_count = prefix_count;
   ra_netif = netif;
 
   if (ip6_addr_islinklocal(netif_ip6_addr(netif, 0))) {

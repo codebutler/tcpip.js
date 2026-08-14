@@ -110,10 +110,28 @@ export type InterfaceConfiguration = {
   ): Promise<void>;
 };
 
-export type RouterAdvertisementOptions = {
+export type RouterAdvertisementPrefix = {
   /** Canonical IPv6 /64 advertised for SLAAC. */
   prefix: IpCidr;
+  /** Valid lifetime in seconds. Defaults to 86400. */
+  validLifetime?: number;
+  /** Preferred lifetime in seconds. Defaults to 14400. */
+  preferredLifetime?: number;
+  /** Advertise this prefix only in the initial RA burst. */
+  initialOnly?: boolean;
 };
+
+export type RouterAdvertisementOptions =
+  | {
+      /** Shorthand for one prefix with the default lifetimes. */
+      prefix: IpCidr;
+      prefixes?: never;
+    }
+  | {
+      /** Prefix Information options to advertise, in wire order. */
+      prefixes: readonly RouterAdvertisementPrefix[];
+      prefix?: never;
+    };
 
 export type LoopbackInterface = InterfaceConfiguration & {
   readonly type: 'loopback';

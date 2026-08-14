@@ -23,7 +23,11 @@ export type NetworkInterfaceExports = {
   remove_interface_ip6_address(handle: number, address: Pointer): number;
   set_interface_router_advertisements(
     handle: number,
-    prefix: Pointer | null
+    prefixes: Pointer | null,
+    validLifetimes: Pointer | null,
+    preferredLifetimes: Pointer | null,
+    initialOnly: Pointer | null,
+    count: number
   ): number;
 };
 
@@ -130,7 +134,14 @@ export class NetworkInterfaceBindings extends Bindings<
   detach(netInterface: NetworkInterface) {
     const state = getState(netInterface);
     if (state.detached) return;
-    this.exports.set_interface_router_advertisements(state.handle, null);
+    this.exports.set_interface_router_advertisements(
+      state.handle,
+      null,
+      null,
+      null,
+      null,
+      0
+    );
     state.detached = true;
     for (const route of state.connectedRoutes.values()) {
       route.handle.dispose();
@@ -216,7 +227,11 @@ export class NetworkInterfaceBindings extends Bindings<
     if (!options) {
       const result = this.exports.set_interface_router_advertisements(
         state.handle,
-        null
+        null,
+        null,
+        null,
+        null,
+        0
       );
       if (result !== 0) {
         throw new Error(`failed to disable router advertisements: ${result}`);
@@ -224,17 +239,64 @@ export class NetworkInterfaceBindings extends Bindings<
       return;
     }
 
-    const prefix = parseCidr(options.prefix);
-    if (prefix.family !== 6 || prefix.prefixLength !== 64) {
-      throw new Error('router advertisements require a canonical IPv6 /64');
-    }
     if (netInterface.mtu < 1280) {
       throw new Error('IPv6 interfaces require an MTU of at least 1280');
     }
-    using prefixPtr = this.copyToMemory(prefix.bytes);
+
+    const configured = options.prefixes ?? [{ prefix: options.prefix }];
+    if (configured.length === 0 || configured.length > 8) {
+      throw new Error(
+        'router advertisements require from 1 through 8 prefixes'
+      );
+    }
+
+    const prefixes = new Uint8Array(configured.length * 16);
+    const validLifetimes = new Uint8Array(configured.length * 4);
+    const preferredLifetimes = new Uint8Array(configured.length * 4);
+    const initialOnly = new Uint8Array(configured.length);
+    const validView = new DataView(validLifetimes.buffer);
+    const preferredView = new DataView(preferredLifetimes.buffer);
+    const seen = new Set<string>();
+
+    configured.forEach((entry, index) => {
+      const prefix = parseCidr(entry.prefix);
+      if (prefix.family !== 6 || prefix.prefixLength !== 64) {
+        throw new Error(
+          'router advertisements require canonical IPv6 /64 prefixes'
+        );
+      }
+      if (seen.has(prefix.canonical)) {
+        throw new Error(
+          `router advertisement prefix already exists: ${prefix.canonical}`
+        );
+      }
+      seen.add(prefix.canonical);
+
+      const valid = entry.validLifetime ?? 86_400;
+      const preferred = entry.preferredLifetime ?? 14_400;
+      if (!isUint32(valid) || !isUint32(preferred) || preferred > valid) {
+        throw new Error(
+          'router advertisement lifetimes must be uint32 seconds with preferred <= valid'
+        );
+      }
+
+      prefixes.set(prefix.bytes, index * 16);
+      validView.setUint32(index * 4, valid, true);
+      preferredView.setUint32(index * 4, preferred, true);
+      initialOnly[index] = entry.initialOnly ? 1 : 0;
+    });
+
+    using prefixesPtr = this.copyToMemory(prefixes);
+    using validPtr = this.copyToMemory(validLifetimes);
+    using preferredPtr = this.copyToMemory(preferredLifetimes);
+    using initialOnlyPtr = this.copyToMemory(initialOnly);
     const result = this.exports.set_interface_router_advertisements(
       state.handle,
-      prefixPtr
+      prefixesPtr,
+      validPtr,
+      preferredPtr,
+      initialOnlyPtr,
+      configured.length
     );
     if (result !== 0) {
       throw new Error(`failed to enable router advertisements: ${result}`);
@@ -286,6 +348,10 @@ export class NetworkInterfaceBindings extends Bindings<
     installed.handle.dispose();
     state.connectedRoutes.delete(network);
   }
+}
+
+function isUint32(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffff_ffff;
 }
 
 function getState(netInterface: InterfaceConfiguration) {

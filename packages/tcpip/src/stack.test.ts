@@ -237,9 +237,31 @@ describe('tun interface', () => {
       via: tunInterface,
     });
     await tunInterface.setRouterAdvertisements({ prefix: 'fdcb:9::/64' });
+    await tunInterface.setRouterAdvertisements({
+      prefixes: [
+        { prefix: 'fdcb:9::/64' },
+        {
+          prefix: 'fdcb:2::/64',
+          validLifetime: 0,
+          preferredLifetime: 0,
+          initialOnly: true,
+        },
+      ],
+    });
     await expect(
       tunInterface.setRouterAdvertisements({ prefix: 'fdcb:9::/48' })
     ).rejects.toThrow(/IPv6 \/64/);
+    await expect(
+      tunInterface.setRouterAdvertisements({
+        prefixes: [
+          {
+            prefix: 'fdcb:9::/64',
+            validLifetime: 10,
+            preferredLifetime: 11,
+          },
+        ],
+      })
+    ).rejects.toThrow(/preferred <= valid/);
     await tunInterface.setRouterAdvertisements(null);
 
     await tunInterface.removeAddress('fdcb:9::2/64');

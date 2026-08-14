@@ -44,12 +44,21 @@ err_t set_interface_mtu(struct netif *netif, uint16_t mtu) {
 
 EXPORT("set_interface_router_advertisements")
 err_t set_interface_router_advertisements(struct netif *netif,
-                                          const uint8_t prefix[16]) {
+                                          const uint8_t *prefixes,
+                                          const uint32_t *valid_lifetimes,
+                                          const uint32_t *preferred_lifetimes,
+                                          const uint8_t *initial_only,
+                                          uint8_t prefix_count) {
 #if LWIP_IPV6
-  return tcpip_ra_set(netif, prefix);
+  return tcpip_ra_set(netif, prefixes, valid_lifetimes, preferred_lifetimes,
+                      initial_only, prefix_count);
 #else
   LWIP_UNUSED_ARG(netif);
-  LWIP_UNUSED_ARG(prefix);
+  LWIP_UNUSED_ARG(prefixes);
+  LWIP_UNUSED_ARG(valid_lifetimes);
+  LWIP_UNUSED_ARG(preferred_lifetimes);
+  LWIP_UNUSED_ARG(initial_only);
+  LWIP_UNUSED_ARG(prefix_count);
   return ERR_IF;
 #endif
 }
