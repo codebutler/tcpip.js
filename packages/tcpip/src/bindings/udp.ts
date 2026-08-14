@@ -1,8 +1,15 @@
 import type { DnsClient } from '@tcpip/dns';
 import { fromReadable } from '@tcpip/transport';
-import { parseIPv4Address, serializeIPv4Address } from '@tcpip/wire';
+import { formatAddress, parseAddress } from '../ip.js';
 import { LwipError } from '../lwip/errors.js';
-import type { UdpDatagram, UdpSocket, UdpSocketOptions } from '../types.js';
+import { NetworkError } from '../network-error.js';
+import type { RouteTable } from '../routes.js';
+import type {
+  IpEndpoint,
+  UdpDatagram,
+  UdpSocket,
+  UdpSocketOptions,
+} from '../types.js';
 import { EventMap, Hooks, nextMicrotask } from '../util.js';
 import { Bindings } from './base.js';
 import type { Pointer } from './types.js';
@@ -27,52 +34,70 @@ const udpSocketHooks = new Hooks<
 export type UdpImports = {
   receive_udp_datagram(
     handle: UdpSocketHandle,
+    family: 4 | 6,
     ip: number,
     port: number,
+    localFamily: 4 | 6,
+    localIp: number,
+    localPort: number,
     datagramPtr: number,
     length: number
   ): Promise<void>;
 };
 
 export type UdpExports = {
-  open_udp_socket(host: Pointer | null, port: number): UdpSocketHandle;
+  open_udp_socket(
+    family: number,
+    host: Pointer | null,
+    port: number
+  ): UdpSocketHandle;
   close_udp_socket(handle: UdpSocketHandle): void;
   send_udp_datagram(
     handle: UdpSocketHandle,
+    family: 4 | 6,
     ip: Pointer | null,
     port: number,
     datagram: Pointer,
     length: number
   ): number;
+  get_udp_local_address_family(handle: UdpSocketHandle): 4 | 6;
+  get_udp_local_address(handle: UdpSocketHandle): Pointer;
+  get_udp_local_port(handle: UdpSocketHandle): number;
 };
 
 export class UdpBindings extends Bindings<UdpImports, UdpExports> {
   #udpSockets = new EventMap<UdpSocketHandle, UdpSocket>();
   #dnsClient: DnsClient;
+  #routes: RouteTable;
 
   async #resolveHost(host: string) {
     try {
-      return serializeIPv4Address(host);
-    } catch (e) {
+      return parseAddress(host);
+    } catch {
       const ip = await this.#dnsClient.lookup(host);
-      return serializeIPv4Address(ip);
+      return parseAddress(ip);
     }
   }
 
-  constructor(dnsClient: DnsClient) {
+  constructor(dnsClient: DnsClient, routes: RouteTable) {
     super();
     this.#dnsClient = dnsClient;
+    this.#routes = routes;
   }
 
   imports = {
     receive_udp_datagram: async (
       handle: UdpSocketHandle,
+      family: 4 | 6,
       hostPtr: number,
       port: number,
+      localFamily: 4 | 6,
+      localHostPtr: number,
+      localPort: number,
       datagramPtr: number,
       length: number
     ) => {
-      const host = this.copyFromMemory(hostPtr, 4);
+      const host = this.copyFromMemory(hostPtr, family === 4 ? 4 : 16);
       const datagram = this.copyFromMemory(datagramPtr, length);
       const socket = this.#udpSockets.get(handle);
 
@@ -85,35 +110,69 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
       await nextMicrotask();
 
       udpSocketHooks.getInner(socket).receive({
-        host: parseIPv4Address(host),
+        host: formatAddress(family, host),
         port,
+        local: {
+          address: formatAddress(
+            localFamily,
+            this.copyFromMemory(localHostPtr, localFamily === 4 ? 4 : 16)
+          ),
+          port: localPort,
+        },
         data: datagram,
       });
     },
   };
 
   async open(options: UdpSocketOptions) {
-    using hostPtr = options.host
-      ? this.copyToMemory(await this.#resolveHost(options.host))
-      : null;
+    const host = options.host ? await this.#resolveHost(options.host) : null;
+    using hostPtr = host ? this.copyToMemory(host.bytes) : null;
 
-    const handle = this.exports.open_udp_socket(hostPtr, options.port ?? 0);
+    const handle = this.exports.open_udp_socket(
+      host?.family ?? 0,
+      hostPtr,
+      options.port ?? 0
+    );
 
     if (Number(handle) === 0) {
       throw new Error('failed to open udp socket');
     }
 
-    const udpSocket = new VirtualUdpSocket();
+    const family = this.exports.get_udp_local_address_family(handle);
+    const localAddressPtr = this.exports.get_udp_local_address(handle);
+    const udpSocket = new VirtualUdpSocket({
+      address: formatAddress(
+        family,
+        this.copyFromMemory(localAddressPtr, family === 4 ? 4 : 16)
+      ),
+      port: this.exports.get_udp_local_port(handle),
+    });
 
     udpSocketHooks.setOuter(udpSocket, {
       send: async (datagram: UdpDatagram) => {
-        using hostPtr = this.copyToMemory(
-          await this.#resolveHost(datagram.host)
-        );
+        const host = await this.#resolveHost(datagram.host);
+        const address = formatAddress(host.family, host.bytes);
+        const route = this.#routes.lookup(address);
+        const isLimitedBroadcast = address === '255.255.255.255';
+        if (!route && !isLimitedBroadcast) {
+          throw new NetworkError('ENETUNREACH', `no route to ${address}`);
+        }
+        if (
+          host.family === 6 &&
+          route &&
+          datagram.data.length + 48 > route.via.mtu
+        ) {
+          throw new NetworkError(
+            'EMSGSIZE',
+            `UDP datagram exceeds interface MTU ${route.via.mtu}`
+          );
+        }
+        using hostPtr = this.copyToMemory(host.bytes);
         using datagramPtr = this.copyToMemory(datagram.data);
 
         const result = this.exports.send_udp_datagram(
           handle,
+          host.family,
           hostPtr,
           datagram.port,
           datagramPtr,
@@ -121,6 +180,9 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
         );
 
         if (result !== LwipError.ERR_OK) {
+          if (result === LwipError.ERR_RTE) {
+            throw new NetworkError('ENETUNREACH', `no route to ${address}`);
+          }
           throw new Error(`failed to send udp datagram: ${result}`);
         }
       },
@@ -142,8 +204,10 @@ export class VirtualUdpSocket implements UdpSocket, AsyncIterable<UdpDatagram> {
 
   readable: ReadableStream<UdpDatagram>;
   writable: WritableStream<UdpDatagram>;
+  readonly local: IpEndpoint;
 
-  constructor() {
+  constructor(local: IpEndpoint) {
+    this.local = local;
     udpSocketHooks.setInner(this, {
       receive: async (datagram: UdpDatagram) => {
         if (!this.#readableController) {

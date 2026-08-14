@@ -197,6 +197,50 @@ describe('tun interface', () => {
     expect(parsedPacket.payload.payload).toStrictEqual(payload);
   });
 
+  test('manages IPv4/IPv6 addresses, connected routes, and MTU', async () => {
+    const stack = await createStack({ initializeLoopback: false });
+    const tunInterface = await stack.interfaces.createTun({});
+
+    expect(tunInterface.addresses).toEqual([]);
+    expect(tunInterface.mtu).toBe(1500);
+
+    await tunInterface.setMtu(1280);
+    await tunInterface.addAddress('fdcb:9::1/64');
+    await tunInterface.addAddress('fdcb:9::2/64');
+    await tunInterface.addAddress('192.0.2.1/24');
+
+    expect(tunInterface.mtu).toBe(1280);
+    expect(tunInterface.addresses).toEqual([
+      'fdcb:9::1/64',
+      'fdcb:9::2/64',
+      '192.0.2.1/24',
+    ]);
+    expect(
+      stack.routes.list().filter((route) => route.destination === 'fdcb:9::/64')
+    ).toHaveLength(1);
+    expect(stack.routes.lookup('fdcb:9::abcd')).toMatchObject({
+      destination: 'fdcb:9::/64',
+      source: 'connected',
+      via: tunInterface,
+    });
+    expect(stack.routes.lookup('192.0.2.99')).toMatchObject({
+      destination: '192.0.2.0/24',
+      source: 'connected',
+      via: tunInterface,
+    });
+
+    await tunInterface.removeAddress('fdcb:9::1/64');
+    expect(tunInterface.addresses).toEqual(['fdcb:9::2/64', '192.0.2.1/24']);
+    expect(stack.routes.lookup('fdcb:9::abcd')).toMatchObject({
+      destination: 'fdcb:9::/64',
+      source: 'connected',
+      via: tunInterface,
+    });
+
+    await tunInterface.removeAddress('fdcb:9::2/64');
+    expect(stack.routes.lookup('fdcb:9::abcd')).toBeNull();
+  });
+
   test('can get ip and netmask', async () => {
     const stack = await createStack();
 
@@ -252,6 +296,8 @@ describe('tap interface', () => {
     );
 
     const replyFrame = await waitFor(listener, (frame) => {
+      // IPv6 control traffic may share the TAP; wait specifically for ARP.
+      if (frame[12] !== 0x08 || frame[13] !== 0x06) return false;
       const parsedFrame = parseEthernetFrame(frame);
       return (
         parsedFrame.type === 'arp' && parsedFrame.payload.opcode === 'reply'
@@ -617,10 +663,23 @@ describe('bridge interface', () => {
 });
 
 describe('tcp', () => {
+  test('reports an unreachable destination when no route exists', async () => {
+    const stack = await createStack({ initializeLoopback: false });
+
+    await expect(
+      stack.tcp.connect({ host: '203.0.113.1', port: 80 })
+    ).rejects.toMatchObject({ code: 'ENETUNREACH' });
+  });
+
   test('routes TCP data that arrives before accepted connection is yielded', async () => {
-    const tcpBindings = new TcpBindings({
-      lookup: vi.fn(),
-    } as unknown as ConstructorParameters<typeof TcpBindings>[0]);
+    const tcpBindings = new TcpBindings(
+      {
+        lookup: vi.fn(),
+      } as unknown as ConstructorParameters<typeof TcpBindings>[0],
+      {
+        lookup: vi.fn(),
+      } as unknown as ConstructorParameters<typeof TcpBindings>[1]
+    );
     const memory = new WebAssembly.Memory({ initial: 1 });
     const data = new TextEncoder().encode('early data');
     const dataPtr = 16;
@@ -640,6 +699,12 @@ describe('tcp', () => {
       shutdown_tcp_connection_write: vi.fn(() => 0),
       send_tcp_chunk: vi.fn(() => 0),
       update_tcp_receive_buffer: vi.fn(),
+      get_tcp_local_address_family: vi.fn(() => 4),
+      get_tcp_local_address: vi.fn(() => 32),
+      get_tcp_local_port: vi.fn(() => 8080),
+      get_tcp_remote_address_family: vi.fn(() => 4),
+      get_tcp_remote_address: vi.fn(() => 36),
+      get_tcp_remote_port: vi.fn(() => 12345),
       get_interface_mac_address: vi.fn(),
       get_interface_ip4_address: vi.fn(),
       get_interface_ip4_netmask: vi.fn(),
@@ -1219,6 +1284,75 @@ describe('tcp', () => {
     expect(received.value).toStrictEqual(data);
   });
 
+  test('IPv6 communication between stacks via tun exposes endpoints', async () => {
+    const stack1 = await createStack({ initializeLoopback: false });
+    const stack2 = await createStack({ initializeLoopback: false });
+    const tun1 = await stack1.interfaces.createTun({});
+    const tun2 = await stack2.interfaces.createTun({});
+    await tun1.setMtu(1280);
+    await tun2.setMtu(1280);
+    await tun1.addAddress('fdcb:9::1/64');
+    await tun2.addAddress('fdcb:9::2/64');
+    tun1.readable.pipeTo(tun2.writable);
+    tun2.readable.pipeTo(tun1.writable);
+
+    const listener = await stack2.tcp.listen({
+      host: 'fdcb:9::2',
+      port: 8080,
+    });
+    const [outbound, inbound] = await Promise.all([
+      stack1.tcp.connect({ host: 'fdcb:9::2', port: 8080 }),
+      nextValue(listener),
+    ]);
+
+    expect(outbound.local.address).toBe('fdcb:9::1');
+    expect(outbound.remote).toEqual({ address: 'fdcb:9::2', port: 8080 });
+    expect(inbound.local).toEqual({ address: 'fdcb:9::2', port: 8080 });
+    expect(inbound.remote.address).toBe('fdcb:9::1');
+
+    const reader = inbound.readable.getReader();
+    await outbound.writable.getWriter().write(new Uint8Array([6]));
+    expect((await reader.read()).value).toEqual(new Uint8Array([6]));
+  });
+
+  test('derives the IPv6 TCP MSS from the selected interface MTU', async () => {
+    const stack = await createStack({ initializeLoopback: false });
+    const tunInterface = await stack.interfaces.createTun({});
+    await tunInterface.setMtu(1280);
+    await tunInterface.addAddress('fdcb:9::1/64');
+    const reader = tunInterface.readable.getReader();
+
+    void stack.tcp
+      .connect({ host: 'fdcb:9::2', port: 8080 })
+      .catch(() => undefined);
+    const result = await reader.read();
+    if (result.done) throw new Error('expected IPv6 SYN');
+
+    const packet = result.value;
+    expect(packet[0]! >> 4).toBe(6);
+    const tcpOffset = 40;
+    const tcpHeaderLength = (packet[tcpOffset + 12]! >> 4) * 4;
+    const options = packet.slice(tcpOffset + 20, tcpOffset + tcpHeaderLength);
+    let advertisedMss: number | undefined;
+    for (let index = 0; index + 3 < options.length; ) {
+      const kind = options[index]!;
+      if (kind === 0) break;
+      if (kind === 1) {
+        index++;
+        continue;
+      }
+      const length = options[index + 1]!;
+      if (kind === 2 && length === 4) {
+        advertisedMss = (options[index + 2]! << 8) | options[index + 3]!;
+        break;
+      }
+      if (length < 2) break;
+      index += length;
+    }
+
+    expect(advertisedMss).toBe(1220);
+  });
+
   test('communication between stacks via tap', async () => {
     const stack1 = await createStack();
     const stack2 = await createStack();
@@ -1313,6 +1447,22 @@ describe('tcp', () => {
 });
 
 describe('udp', () => {
+  test('rejects an IPv6 datagram larger than the selected interface MTU', async () => {
+    const stack = await createStack({ initializeLoopback: false });
+    const tunInterface = await stack.interfaces.createTun({});
+    await tunInterface.setMtu(1280);
+    await tunInterface.addAddress('fdcb:9::1/64');
+    const socket = await stack.udp.open();
+
+    await expect(
+      socket.writable.getWriter().write({
+        host: 'fdcb:9::2',
+        port: 8080,
+        data: new Uint8Array(1233),
+      })
+    ).rejects.toMatchObject({ code: 'EMSGSIZE' });
+  });
+
   test('can send and receive a UDP datagram', async () => {
     const stack = await createStack();
 
@@ -1334,6 +1484,35 @@ describe('udp', () => {
     expect(received.value.host).toBe('127.0.0.1');
     expect(received.value.port).toBe(8081);
     expect(received.value.data).toStrictEqual(data);
+  });
+
+  test('can send and receive an IPv6 UDP datagram between stacks', async () => {
+    const stack1 = await createStack({ initializeLoopback: false });
+    const stack2 = await createStack({ initializeLoopback: false });
+    const tun1 = await stack1.interfaces.createTun({});
+    const tun2 = await stack2.interfaces.createTun({});
+    await tun1.setMtu(1280);
+    await tun2.setMtu(1280);
+    await tun1.addAddress('fdcb:9::1/64');
+    await tun2.addAddress('fdcb:9::2/64');
+    tun1.readable.pipeTo(tun2.writable);
+    tun2.readable.pipeTo(tun1.writable);
+
+    const sender = await stack1.udp.open();
+    const receiver = await stack2.udp.open({ host: 'fdcb:9::2', port: 8080 });
+    const reader = receiver.readable.getReader();
+    await sender.writable.getWriter().write({
+      host: 'fdcb:9::2',
+      port: 8080,
+      data: new Uint8Array([6]),
+    });
+
+    const received = await reader.read();
+    expect(received.value).toMatchObject({
+      host: 'fdcb:9::1',
+      local: { address: 'fdcb:9::2', port: 8080 },
+      data: new Uint8Array([6]),
+    });
   });
 
   test('can receive udp datagram via tun interface', async () => {
@@ -1416,6 +1595,47 @@ describe('udp', () => {
     expect(parsedPacket.payload.payload).toStrictEqual(data);
   });
 
+  test('routes packets by longest prefix and uses /0 as the default route', async () => {
+    const stack = await createStack();
+
+    const defaultGateway = await stack.interfaces.createTun({
+      ip: '10.0.0.1/24',
+    });
+    const privateNetwork = await stack.interfaces.createTun({
+      ip: '10.1.0.1/24',
+    });
+
+    stack.routes.add({ destination: '0.0.0.0/0', via: defaultGateway });
+    stack.routes.add({ destination: '192.168.0.0/16', via: privateNetwork });
+
+    const defaultReader = defaultGateway.readable.getReader();
+    const privateReader = privateNetwork.readable.getReader();
+    const socket = await stack.udp.open();
+    const writer = socket.writable.getWriter();
+
+    await writer.write({
+      host: '203.0.113.10',
+      port: 8080,
+      data: new Uint8Array([1]),
+    });
+    const defaultPacket = await defaultReader.read();
+    expect(defaultPacket.done).toBe(false);
+    expect(parseIPv4Packet(defaultPacket.value!).destinationIP).toBe(
+      '203.0.113.10'
+    );
+
+    await writer.write({
+      host: '192.168.20.30',
+      port: 8080,
+      data: new Uint8Array([2]),
+    });
+    const privatePacket = await privateReader.read();
+    expect(privatePacket.done).toBe(false);
+    expect(parseIPv4Packet(privatePacket.value!).destinationIP).toBe(
+      '192.168.20.30'
+    );
+  });
+
   test('can receive broadcast udp datagram', async () => {
     const stack = await createStack();
 
@@ -1479,6 +1699,7 @@ describe('udp', () => {
     });
 
     const received = await waitFor(listener, (frame) => {
+      if (frame[12] !== 0x08 || frame[13] !== 0x00) return false;
       const parsedFrame = parseEthernetFrame(frame);
       return parsedFrame.type === 'ipv4';
     });
@@ -1534,11 +1755,13 @@ describe('udp', () => {
 
     // Check that both interfaces received the broadcast
     const received1 = await waitFor(tap1Listener, (frame) => {
+      if (frame[12] !== 0x08 || frame[13] !== 0x00) return false;
       const parsedFrame = parseEthernetFrame(frame);
       return parsedFrame.type === 'ipv4';
     });
 
     const received2 = await waitFor(tap2Listener, (frame) => {
+      if (frame[12] !== 0x08 || frame[13] !== 0x00) return false;
       const parsedFrame = parseEthernetFrame(frame);
       return parsedFrame.type === 'ipv4';
     });
@@ -1765,6 +1988,29 @@ describe('ping', () => {
     expect(secondReply.roundTripTime).toBeGreaterThanOrEqual(0);
 
     await pingSession.close();
+  });
+
+  test('ping session can ping another stack over IPv6', async () => {
+    const stack1 = await createStack({ initializeLoopback: false });
+    const stack2 = await createStack({ initializeLoopback: false });
+    const tun1 = await stack1.interfaces.createTun({});
+    const tun2 = await stack2.interfaces.createTun({});
+    await tun1.setMtu(1280);
+    await tun2.setMtu(1280);
+    await tun1.addAddress('fdcb:9::1/64');
+    await tun2.addAddress('fdcb:9::2/64');
+    tun1.readable.pipeTo(tun2.writable);
+    tun2.readable.pipeTo(tun1.writable);
+
+    const session = await stack1.ping.createSession({
+      host: 'fdcb:9::2',
+      timeout: 1000,
+    });
+    const reply = await session.ping({ payload: new Uint8Array([6]) });
+
+    expect(reply.host).toBe('fdcb:9::2');
+    expect(reply.payload).toEqual(new Uint8Array([6]));
+    await session.close();
   });
 
   test('ping session rejects when the host does not reply', async () => {

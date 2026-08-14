@@ -12,6 +12,11 @@ export type DnsClientOptions = {
   nameServer?: NameServer;
 };
 
+export type DnsLookupOptions = {
+  /** Address family to request. `any` prefers AAAA and falls back to A. */
+  family?: 4 | 6 | 'any';
+};
+
 export class DnsClient {
   #transport: DatagramTransport;
   #nameServer: NameServer;
@@ -95,14 +100,22 @@ export class DnsClient {
     throw new Error('udp socket closed before receiving response');
   }
 
-  /**
-   * Performs an A record lookup to get the IP address for a hostname.
-   */
-  async lookup(name: string): Promise<string> {
-    const response = await this.#query({ name, type: 'A' });
+  /** Performs an IPv4 or IPv6 address lookup for a hostname. */
+  async lookup(name: string, options: DnsLookupOptions = {}): Promise<string> {
+    const family = options.family ?? 'any';
+    if (family === 'any') {
+      try {
+        return await this.lookup(name, { family: 6 });
+      } catch {
+        return await this.lookup(name, { family: 4 });
+      }
+    }
 
-    if (!response || response.type !== 'A') {
-      throw new Error(`no A record found for ${name}`);
+    const type = family === 6 ? 'AAAA' : 'A';
+    const response = await this.#query({ name, type });
+
+    if (!response || response.type !== type) {
+      throw new Error(`no ${type} record found for ${name}`);
     }
 
     return response.ip;

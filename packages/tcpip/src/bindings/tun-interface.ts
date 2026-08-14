@@ -7,6 +7,7 @@ import {
 import type { TunInterface, TunInterfaceOptions } from '../types.js';
 import { ExtendedReadableStream, Hooks, nextMicrotask } from '../util.js';
 import { Bindings } from './base.js';
+import { VirtualNetworkInterface } from './network-interface.js';
 import type { Pointer } from './types.js';
 
 type TunInterfaceHandle = Pointer;
@@ -144,7 +145,10 @@ export class TunBindings extends Bindings<TunImports, TunExports> {
   }
 }
 
-export class VirtualTunInterface implements TunInterface {
+export class VirtualTunInterface
+  extends VirtualNetworkInterface
+  implements TunInterface
+{
   #readableController?: ReadableStreamController<Uint8Array>;
   #isListening = false;
 
@@ -159,6 +163,7 @@ export class VirtualTunInterface implements TunInterface {
   writable: WritableStream<Uint8Array>;
 
   constructor() {
+    super();
     tunInterfaceHooks.setInner(this, {
       receivePacket: async (packet: Uint8Array<ArrayBuffer>) => {
         // Do not buffer packets until the consumer signals intent

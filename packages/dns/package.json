@@ -4,7 +4,7 @@
   "description": "DNS server built on tcpip.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chipmk/tcpip.js.git",
+    "url": "https://github.com/codebutler/tcpip.js.git",
     "directory": "packages/dns"
   },
   "main": "dist/index.cjs",

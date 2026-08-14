@@ -3,12 +3,15 @@ import { DnsClient, type NameServer } from '@tcpip/dns';
 import { BridgeBindings } from './bindings/bridge-interface.js';
 import { IcmpBindings } from './bindings/icmp.js';
 import { LoopbackBindings } from './bindings/loopback-interface.js';
+import { NetworkInterfaceBindings } from './bindings/network-interface.js';
+import { RouteBindings } from './bindings/routes.js';
 import { TapBindings } from './bindings/tap-interface.js';
 import { TcpBindings } from './bindings/tcp.js';
 import { TunBindings } from './bindings/tun-interface.js';
 import type { WasmInstance } from './bindings/types.js';
 import { UdpBindings } from './bindings/udp.js';
 import { fetchFile } from './fetch-file.js';
+import { RouteTable } from './routes.js';
 import type {
   NetworkInterface,
   NetworkInterfaces,
@@ -51,6 +54,8 @@ export class VirtualNetworkStack implements NetworkStack {
   #tunBindings: TunBindings;
   #tapBindings: TapBindings;
   #bridgeBindings: BridgeBindings;
+  #routeBindings: RouteBindings;
+  #networkInterfaceBindings: NetworkInterfaceBindings;
   #tcpBindings: TcpBindings;
   #udpBindings: UdpBindings;
   #icmpBindings: IcmpBindings;
@@ -60,6 +65,7 @@ export class VirtualNetworkStack implements NetworkStack {
   readonly udp: UdpTransport;
   readonly ping: PingApi;
   readonly interfaces: NetworkInterfaces;
+  readonly routes: RouteTable;
 
   constructor(options: NetworkStackOptions = {}) {
     this.#options = {
@@ -72,6 +78,13 @@ export class VirtualNetworkStack implements NetworkStack {
     this.#tunBindings = new TunBindings();
     this.#tapBindings = new TapBindings();
     this.#bridgeBindings = new BridgeBindings();
+    this.routes = new RouteTable((netInterface) => {
+      this.#interfaceHandle(netInterface);
+    });
+    this.#networkInterfaceBindings = new NetworkInterfaceBindings(this.routes);
+    this.#routeBindings = new RouteBindings(this.routes, (netInterface) =>
+      this.#interfaceHandle(netInterface)
+    );
 
     this.tcp = {
       connect: async (options) => {
@@ -98,22 +111,33 @@ export class VirtualNetworkStack implements NetworkStack {
     this.interfaces = {
       createLoopback: async (options) => {
         await this.ready;
-        return this.#loopbackBindings.create(options);
+        const netInterface = await this.#loopbackBindings.create(options);
+        this.#attachInterface(netInterface, options.ip);
+        return netInterface;
       },
       createTun: async (options) => {
         await this.ready;
-        return this.#tunBindings.create(options);
+        const netInterface = await this.#tunBindings.create(options);
+        this.#attachInterface(netInterface, options.ip);
+        return netInterface;
       },
       createTap: async (options = {}) => {
         await this.ready;
-        return this.#tapBindings.create(options);
+        const netInterface = await this.#tapBindings.create(options);
+        this.#attachInterface(netInterface, options.ip);
+        return netInterface;
       },
       createBridge: async (options) => {
         await this.ready;
-        return this.#bridgeBindings.create(options);
+        const netInterface = await this.#bridgeBindings.create(options);
+        this.#attachInterface(netInterface, options.ip);
+        return netInterface;
       },
       remove: async (netInterface) => {
         await this.ready;
+
+        this.#networkInterfaceBindings.detach(netInterface);
+        this.routes.removeInterface(netInterface);
 
         switch (netInterface.type) {
           case 'loopback':
@@ -133,9 +157,9 @@ export class VirtualNetworkStack implements NetworkStack {
     this.#dnsClient = new DnsClient(this.udp, {
       nameServer: options.nameServer ?? { ip: '127.0.0.1', port: 53 },
     });
-    this.#tcpBindings = new TcpBindings(this.#dnsClient);
-    this.#udpBindings = new UdpBindings(this.#dnsClient);
-    this.#icmpBindings = new IcmpBindings(this.#dnsClient);
+    this.#tcpBindings = new TcpBindings(this.#dnsClient, this.routes);
+    this.#udpBindings = new UdpBindings(this.#dnsClient, this.routes);
+    this.#icmpBindings = new IcmpBindings(this.#dnsClient, this.routes);
 
     // Initialize the stack
     this.ready = this.#init();
@@ -143,9 +167,10 @@ export class VirtualNetworkStack implements NetworkStack {
     // Post-init setup
     this.ready.then(async () => {
       if (this.#options.initializeLoopback) {
-        await this.interfaces.createLoopback({
+        const loopback = await this.interfaces.createLoopback({
           ip: '127.0.0.1/8',
         });
+        await loopback.addAddress('::1/128');
       }
     });
   }
@@ -178,6 +203,7 @@ export class VirtualNetworkStack implements NetworkStack {
         ...this.#tunBindings.imports,
         ...this.#tapBindings.imports,
         ...this.#bridgeBindings.imports,
+        ...this.#routeBindings.imports,
         ...this.#tcpBindings.imports,
         ...this.#udpBindings.imports,
         ...this.#icmpBindings.imports,
@@ -190,6 +216,8 @@ export class VirtualNetworkStack implements NetworkStack {
     this.#tunBindings.register(wasmInstance.exports);
     this.#tapBindings.register(wasmInstance.exports);
     this.#bridgeBindings.register(wasmInstance.exports);
+    this.#networkInterfaceBindings.register(wasmInstance.exports);
+    this.#routeBindings.register(wasmInstance.exports);
     this.#tcpBindings.register(wasmInstance.exports);
     this.#udpBindings.register(wasmInstance.exports);
     this.#icmpBindings.register(wasmInstance.exports);
@@ -213,6 +241,28 @@ export class VirtualNetworkStack implements NetworkStack {
     yield* this.#tunBindings.interfaces.values();
     yield* this.#tapBindings.interfaces.values();
     yield* this.#bridgeBindings.interfaces.values();
+  }
+
+  #interfaceHandle(netInterface: NetworkInterface): number {
+    for (const bindings of [
+      this.#loopbackBindings,
+      this.#tunBindings,
+      this.#tapBindings,
+      this.#bridgeBindings,
+    ]) {
+      for (const [handle, candidate] of bindings.interfaces) {
+        if (candidate === netInterface) return Number(handle);
+      }
+    }
+    throw new Error('route interface does not belong to this network stack');
+  }
+
+  #attachInterface(netInterface: NetworkInterface, initialAddress?: string) {
+    this.#networkInterfaceBindings.attach(
+      netInterface,
+      this.#interfaceHandle(netInterface),
+      initialAddress ? [initialAddress] : []
+    );
   }
 
   /**

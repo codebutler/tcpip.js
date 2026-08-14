@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "lwip/err.h"
+#include "ip_address.h"
 #include "macros.h"
 
 extern void accept_tcp_connection(struct tcp_pcb *listener, struct tcp_pcb *pcb);
@@ -86,22 +87,23 @@ err_t accept_callback(void *arg, struct tcp_pcb *conn, err_t err) {
 }
 
 EXPORT("create_tcp_listener")
-struct tcp_pcb *create_tcp_listener(uint8_t *host, int port) {
-  struct tcp_pcb *listener = tcp_new();
+struct tcp_pcb *create_tcp_listener(uint8_t family, const uint8_t *host, int port) {
+  ip_addr_t bind_address;
+  struct tcp_pcb *listener = tcp_new_ip_type(
+      host ? (family == TCPIP_AF_IPV6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4)
+           : IPADDR_TYPE_ANY);
 
   if (listener == NULL) {
     return NULL;
   }
 
-  ip4_addr_t ipaddr;
-  if (host != NULL) {
-    IP4_ADDR(&ipaddr, host[0], host[1], host[2], host[3]);
-  } else {
-    IP4_ADDR(&ipaddr, 0, 0, 0, 0);
-  }
-
   err_t err;
-  err = tcp_bind(listener, IP_ANY_TYPE, port);
+  if (host) {
+    err = tcpip_ip_addr_from_bytes(family, host, &bind_address);
+    if (err == ERR_OK) err = tcp_bind(listener, &bind_address, port);
+  } else {
+    err = tcp_bind(listener, IP_ANY_TYPE, port);
+  }
   if (err != ERR_OK) {
     tcp_close(listener);
     return NULL;
@@ -132,15 +134,19 @@ err_t connected_callback(void *arg, struct tcp_pcb *conn, err_t err) {
 }
 
 EXPORT("create_tcp_connection")
-struct tcp_pcb *create_tcp_connection(uint8_t *host, int port) {
-  struct tcp_pcb *conn = tcp_new();
+struct tcp_pcb *create_tcp_connection(uint8_t family, const uint8_t *host, int port) {
+  struct tcp_pcb *conn = tcp_new_ip_type(
+      family == TCPIP_AF_IPV6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4);
 
   if (conn == NULL) {
     return NULL;
   }
 
-  ip4_addr_t ipaddr;
-  IP4_ADDR(&ipaddr, host[0], host[1], host[2], host[3]);
+  ip_addr_t ipaddr;
+  if (tcpip_ip_addr_from_bytes(family, host, &ipaddr) != ERR_OK) {
+    tcp_close(conn);
+    return NULL;
+  }
 
   err_t err = tcp_connect(conn, &ipaddr, port, connected_callback);
 
@@ -150,4 +156,34 @@ struct tcp_pcb *create_tcp_connection(uint8_t *host, int port) {
   }
 
   return conn;
+}
+
+EXPORT("get_tcp_local_address_family")
+uint8_t get_tcp_local_address_family(struct tcp_pcb *conn) {
+  return tcpip_ip_addr_family(&conn->local_ip);
+}
+
+EXPORT("get_tcp_local_address")
+const uint8_t *get_tcp_local_address(struct tcp_pcb *conn) {
+  return tcpip_ip_addr_bytes(&conn->local_ip);
+}
+
+EXPORT("get_tcp_local_port")
+uint16_t get_tcp_local_port(struct tcp_pcb *conn) {
+  return conn->local_port;
+}
+
+EXPORT("get_tcp_remote_address_family")
+uint8_t get_tcp_remote_address_family(struct tcp_pcb *conn) {
+  return tcpip_ip_addr_family(&conn->remote_ip);
+}
+
+EXPORT("get_tcp_remote_address")
+const uint8_t *get_tcp_remote_address(struct tcp_pcb *conn) {
+  return tcpip_ip_addr_bytes(&conn->remote_ip);
+}
+
+EXPORT("get_tcp_remote_port")
+uint16_t get_tcp_remote_port(struct tcp_pcb *conn) {
+  return conn->remote_port;
 }

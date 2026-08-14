@@ -120,6 +120,10 @@ export class DhcpServer {
         return this.#handleRequest(message);
       case 'RELEASE':
         return this.#handleRelease(message);
+      case 'INFORM':
+        return this.#handleInform(message);
+      case 'DECLINE':
+        return this.#handleDecline(message);
       default:
         throw new Error(
           `received unsupported dhcp client message type: ${message.type}`
@@ -238,6 +242,39 @@ export class DhcpServer {
 
   #handleRelease(message: DhcpMessage) {
     this.leases.delete(message.mac);
+    this.#offers.delete(message.mac);
+  }
+
+  /**
+   * DHCPINFORM (RFC 2131 §4.3.5): client already has an IP (ciaddr) and only
+   * wants configuration options. Reply with ACK, no lease allocation, yiaddr
+   * left at 0.0.0.0, unicast to ciaddr.
+   */
+  #handleInform(message: DhcpMessage): Datagram | undefined {
+    if (!message.ciaddr || message.ciaddr === '0.0.0.0') {
+      return;
+    }
+
+    const ack = serializeDhcpMessage(
+      {
+        op: 2,
+        xid: message.xid,
+        yiaddr: '0.0.0.0',
+        mac: message.mac,
+        type: DhcpMessageTypes.ACK,
+      },
+      this.#options
+    );
+
+    return {
+      host: message.ciaddr,
+      port: DHCP_CLIENT_PORT,
+      data: ack,
+    };
+  }
+
+  /** DHCPDECLINE: client rejected an offer — drop the pending offer, no reply. */
+  #handleDecline(message: DhcpMessage) {
     this.#offers.delete(message.mac);
   }
 

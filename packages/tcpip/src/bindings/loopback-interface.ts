@@ -6,6 +6,7 @@ import {
 import type { LoopbackInterface, LoopbackInterfaceOptions } from '../types.js';
 import { Hooks } from '../util.js';
 import { Bindings } from './base.js';
+import { VirtualNetworkInterface } from './network-interface.js';
 import type { Pointer } from './types.js';
 
 type LoopbackInterfaceHandle = Pointer;
@@ -108,7 +109,10 @@ export class LoopbackBindings extends Bindings<
   }
 }
 
-export class VirtualLoopbackInterface implements LoopbackInterface {
+export class VirtualLoopbackInterface
+  extends VirtualNetworkInterface
+  implements LoopbackInterface
+{
   readonly type = 'loopback';
   get ip(): IPv4Address | undefined {
     return loopbackInterfaceHooks.getOuter(this).getIPv4Address();

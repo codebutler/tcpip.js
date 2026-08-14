@@ -36,7 +36,8 @@ export async function createDns(
       await server.listen();
       return server;
     },
-    lookup: async (name: string) => client.lookup(name),
+    lookup: async (name: string, lookupOptions?: { family?: 4 | 6 | 'any' }) =>
+      client.lookup(name, lookupOptions),
     reverse: async (ip: string) => client.reverse(ip),
   };
 }

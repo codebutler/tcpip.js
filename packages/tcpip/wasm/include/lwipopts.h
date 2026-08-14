@@ -8,7 +8,8 @@
 #define LWIP_NETCONN 0                                            // Disable Netconn API (assumes NO_SYS=0)
 #define LWIP_NETIF_API 0                                          // Disable network interface API (assumes NO_SYS=0)
 #define LWIP_NUM_NETIF_CLIENT_DATA 1                              // Number of client data entries in struct netif (required for bridgeif)
-#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)  // Number of simultaneously active timeouts (default + 1 for bridgeif)
+// +2: bridgeif FDB aging + pc RA sender (both own a sys_timeout slot).
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 2)
 
 // Constants used for calculations
 #define TCP_HEADER_LEN 20  // Minimum length of a TCP header (in bytes)
@@ -39,8 +40,29 @@
 #define BRIDGEIF_MAX_PORTS 31  // Maximum number of ports in a bridge
 
 // IP options
-#define LWIP_IPV4 1   // Enable IPv4 support
-#define IP_FORWARD 1  // Enable IP forwarding
+#define LWIP_IPV4 1              // Enable IPv4 support
+#define IP_FORWARD 1             // Enable IP forwarding
+#define LWIP_IPV6 1              // Enable IPv6 (pc dual-stack)
+#define LWIP_IPV6_FORWARD 1      // Forward IPv6 across network interfaces
+#define LWIP_IPV6_NUM_ADDRESSES 8
+#define LWIP_IPV6_AUTOCONFIG 1
+#define LWIP_IPV6_MLD 1
+#define LWIP_IPV6_FRAG 1
+#define LWIP_IPV6_REASS 1
+#define LWIP_ICMP6 1
+#define LWIP_ND6_QUEUEING 1
+// Application-configured longest-prefix routing table (see wasm/routes.c).
+#define LWIP_HOOK_IP4_ROUTE_SRC(src, dest) tcpip_ip4_route(src, dest)
+#define LWIP_HOOK_IP6_ROUTE(src, dest) tcpip_ip6_route(src, dest)
+// Peek for Router Solicitations so the bridge can answer with an RA.
+#define LWIP_HOOK_IP6_INPUT(p, inp) pc_ip6_input_hook(p, inp)
+struct netif;
+struct ip4_addr;
+struct ip6_addr;
+struct pbuf;
+struct netif *tcpip_ip4_route(const struct ip4_addr *src, const struct ip4_addr *dest);
+struct netif *tcpip_ip6_route(const struct ip6_addr *src, const struct ip6_addr *dest);
+int pc_ip6_input_hook(struct pbuf *p, struct netif *inp);
 
 // Internet Control Message Protocol (ICMP) options
 #define LWIP_ICMP 1  // Enable ICMP (ping)
@@ -57,7 +79,14 @@
 
 // UDP options
 #define LWIP_UDP 1                             // Enable UDP functionality
-#define LWIP_IP_ACCEPT_UDP_PORT(dst_port) (1)  // Allow broadcast IP packets on all UDP ports
+// pc#714: accept a not-for-us UDP packet locally ONLY for the DHCP ports.
+// The upstream shim set this to (1) — accept EVERY UDP port — which made lwIP
+// consume every off-LAN guest UDP datagram into udp_input (dropped, no
+// listener) instead of forwarding it through the selected route. Restricting it to the
+// DHCP ports lets all other guest UDP forward (dst_port is network order, per
+// ip4_input passing udphdr->dest; PP_NTOHS matches at compile time).
+#define LWIP_IP_ACCEPT_UDP_PORT(dst_port) \
+  ((dst_port) == PP_NTOHS(67) || (dst_port) == PP_NTOHS(68))
 #define MEMP_NUM_UDP_PCB 256                   // Number of simultaneously active UDP PCBs
 
 // Checksum options (packet integrity)

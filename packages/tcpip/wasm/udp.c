@@ -5,20 +5,25 @@
 
 #include "lwip/err.h"
 #include "lwip/netif.h"
+#include "ip_address.h"
 #include "macros.h"
 
-extern void receive_udp_datagram(struct udp_pcb *socket, const uint8_t *addr, uint16_t port, const uint8_t *datagram, uint16_t length);
+extern void receive_udp_datagram(struct udp_pcb *socket,
+                                 uint8_t remote_family, const uint8_t *remote_addr, uint16_t remote_port,
+                                 uint8_t local_family, const uint8_t *local_addr, uint16_t local_port,
+                                 const uint8_t *datagram, uint16_t length);
 
 EXPORT("send_udp_datagram")
-err_t send_udp_datagram(struct udp_pcb *socket, const uint8_t *addr, uint16_t port, uint8_t *datagram, uint16_t length) {
-  ip4_addr_t ipaddr;
-  IP4_ADDR(&ipaddr, addr[0], addr[1], addr[2], addr[3]);
+err_t send_udp_datagram(struct udp_pcb *socket, uint8_t family, const uint8_t *addr, uint16_t port, uint8_t *datagram, uint16_t length) {
+  ip_addr_t ipaddr;
+  err_t parsed = tcpip_ip_addr_from_bytes(family, addr, &ipaddr);
+  if (parsed != ERR_OK) return parsed;
 
   err_t code = ERR_OK;
 
   // If the destination IP is the limited broadcast address (255.255.255.255),
   // send on all interfaces that are up, support ARP, and have the broadcast flag set
-  if (ipaddr.addr == PP_HTONL(IPADDR_BROADCAST)) {
+  if (IP_IS_V4(&ipaddr) && ip_addr_get_ip4_u32(&ipaddr) == PP_HTONL(IPADDR_BROADCAST)) {
     struct netif *netif;
 
     NETIF_FOREACH(netif) {
@@ -54,18 +59,25 @@ void close_udp_socket(struct udp_pcb *socket) {
 }
 
 // Callback for when data is received
-void recv_udp_callback(void *arg, struct udp_pcb *socket, struct pbuf *p, const struct ip4_addr *addr, uint16_t port) {
+void recv_udp_callback(void *arg, struct udp_pcb *socket, struct pbuf *p, const ip_addr_t *addr, uint16_t port) {
+  const ip_addr_t *local_addr;
   if (p == NULL) {
     return;
   }
-
-  receive_udp_datagram(socket, (const uint8_t *)&addr->addr, port, p->payload, p->len);
+  local_addr = ip_addr_isany(&socket->local_ip) ? ip_current_dest_addr() : &socket->local_ip;
+  receive_udp_datagram(socket, tcpip_ip_addr_family(addr),
+                       tcpip_ip_addr_bytes(addr), port,
+                       tcpip_ip_addr_family(local_addr),
+                       tcpip_ip_addr_bytes(local_addr), socket->local_port,
+                       p->payload, p->len);
   pbuf_free(p);
 }
 
 EXPORT("open_udp_socket")
-struct udp_pcb *open_udp_socket(uint8_t *host, int port) {
-  struct udp_pcb *socket = udp_new();
+struct udp_pcb *open_udp_socket(uint8_t family, const uint8_t *host, int port) {
+  struct udp_pcb *socket = udp_new_ip_type(host ?
+      (family == TCPIP_AF_IPV6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4) :
+      IPADDR_TYPE_ANY);
 
   if (socket == NULL) {
     return NULL;
@@ -73,11 +85,14 @@ struct udp_pcb *open_udp_socket(uint8_t *host, int port) {
 
   ip_set_option(socket, SOF_BROADCAST);
 
-  ip4_addr_t ipaddr;
+  ip_addr_t ipaddr;
   if (host != NULL) {
-    IP4_ADDR(&ipaddr, host[0], host[1], host[2], host[3]);
+    if (tcpip_ip_addr_from_bytes(family, host, &ipaddr) != ERR_OK) {
+      udp_remove(socket);
+      return NULL;
+    }
   } else {
-    IP4_ADDR(&ipaddr, 0, 0, 0, 0);
+    ip_addr_set_ipaddr(&ipaddr, IP_ANY_TYPE);
   }
 
   err_t err;
@@ -89,4 +104,19 @@ struct udp_pcb *open_udp_socket(uint8_t *host, int port) {
 
   udp_recv(socket, recv_udp_callback, NULL);
   return socket;
+}
+
+EXPORT("get_udp_local_address_family")
+uint8_t get_udp_local_address_family(struct udp_pcb *socket) {
+  return tcpip_ip_addr_family(&socket->local_ip);
+}
+
+EXPORT("get_udp_local_address")
+const uint8_t *get_udp_local_address(struct udp_pcb *socket) {
+  return tcpip_ip_addr_bytes(&socket->local_ip);
+}
+
+EXPORT("get_udp_local_port")
+uint16_t get_udp_local_port(struct udp_pcb *socket) {
+  return socket->local_port;
 }

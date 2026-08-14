@@ -12,6 +12,7 @@ import { LwipError } from '../lwip/errors.js';
 import type { TapInterface, TapInterfaceOptions } from '../types.js';
 import { ExtendedReadableStream, Hooks, nextMicrotask } from '../util.js';
 import { Bindings } from './base.js';
+import { VirtualNetworkInterface } from './network-interface.js';
 import type { Pointer } from './types.js';
 
 type TapInterfaceHandle = Pointer;
@@ -173,7 +174,10 @@ export class TapBindings extends Bindings<TapImports, TapExports> {
   }
 }
 
-export class VirtualTapInterface implements TapInterface {
+export class VirtualTapInterface
+  extends VirtualNetworkInterface
+  implements TapInterface
+{
   #readableController?: ReadableStreamController<Uint8Array>;
   #isListening = false;
 
@@ -191,6 +195,7 @@ export class VirtualTapInterface implements TapInterface {
   writable: WritableStream<Uint8Array>;
 
   constructor() {
+    super();
     tapInterfaceHooks.setInner(this, {
       receiveFrame: async (frame: Uint8Array<ArrayBuffer>) => {
         // Do not buffer frames until the consumer signals intent

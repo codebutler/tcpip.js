@@ -1,8 +1,11 @@
 import type { DnsClient } from '@tcpip/dns';
 import { fromReadable } from '@tcpip/transport';
-import { serializeIPv4Address } from '@tcpip/wire';
+import { formatAddress, parseAddress } from '../ip.js';
 import { LwipError } from '../lwip/errors.js';
+import { NetworkError } from '../network-error.js';
+import type { RouteTable } from '../routes.js';
 import type {
+  IpEndpoint,
   TcpConnection,
   TcpConnectionOptions,
   TcpListener,
@@ -67,8 +70,16 @@ export type TcpImports = {
 };
 
 export type TcpExports = {
-  create_tcp_listener(host: Pointer | null, port: number): TcpListenerHandle;
-  create_tcp_connection(host: Pointer, port: number): TcpConnectionHandle;
+  create_tcp_listener(
+    family: number,
+    host: Pointer | null,
+    port: number
+  ): TcpListenerHandle;
+  create_tcp_connection(
+    family: number,
+    host: Pointer,
+    port: number
+  ): TcpConnectionHandle;
   close_tcp_connection(handle: TcpConnectionHandle): number;
   shutdown_tcp_connection_write(handle: TcpConnectionHandle): number;
   send_tcp_chunk(
@@ -77,6 +88,12 @@ export type TcpExports = {
     length: number
   ): number;
   update_tcp_receive_buffer(handle: TcpConnectionHandle, length: number): void;
+  get_tcp_local_address_family(handle: TcpConnectionHandle): 4 | 6;
+  get_tcp_local_address(handle: TcpConnectionHandle): Pointer;
+  get_tcp_local_port(handle: TcpConnectionHandle): number;
+  get_tcp_remote_address_family(handle: TcpConnectionHandle): 4 | 6;
+  get_tcp_remote_address(handle: TcpConnectionHandle): Pointer;
+  get_tcp_remote_port(handle: TcpConnectionHandle): number;
 };
 
 export class TcpBindings extends Bindings<TcpImports, TcpExports> {
@@ -86,19 +103,21 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   #tcpAcks = new Map<TcpConnectionHandle, (length: number) => void>();
   #tcpCloseAcks = new Map<TcpConnectionHandle, () => void>();
   #dnsClient: DnsClient;
+  #routes: RouteTable;
 
   async #resolveHost(host: string) {
     try {
-      return serializeIPv4Address(host);
-    } catch (e) {
+      return parseAddress(host);
+    } catch {
       const ip = await this.#dnsClient.lookup(host);
-      return serializeIPv4Address(ip);
+      return parseAddress(ip);
     }
   }
 
-  constructor(dnsClient: DnsClient) {
+  constructor(dnsClient: DnsClient, routes: RouteTable) {
     super();
     this.#dnsClient = dnsClient;
+    this.#routes = routes;
   }
 
   async #closeConnection(handle: TcpConnectionHandle) {
@@ -149,7 +168,10 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
         return;
       }
 
-      const connection = new VirtualTcpConnection();
+      const connection = new VirtualTcpConnection(
+        this.#getEndpoint(connectionHandle, 'local'),
+        this.#getEndpoint(connectionHandle, 'remote')
+      );
 
       tcpConnectionHooks.setOuter(connection, {
         send: async (data) => {
@@ -196,7 +218,10 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
       tcpListenerHooks.getInner(listener).accept(connection);
     },
     connected_tcp_connection: async (handle: TcpConnectionHandle) => {
-      const connection = new VirtualTcpConnection();
+      const connection = new VirtualTcpConnection(
+        this.#getEndpoint(handle, 'local'),
+        this.#getEndpoint(handle, 'remote')
+      );
 
       tcpConnectionHooks.setOuter(connection, {
         send: async (data) => {
@@ -282,11 +307,16 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   };
 
   async listen(options: TcpListenerOptions) {
-    using hostPtr = options.host
-      ? this.copyToMemory(await this.#resolveHost(options.host))
-      : null;
+    const host = options.host ? await this.#resolveHost(options.host) : null;
+    using hostPtr = host ? this.copyToMemory(host.bytes) : null;
 
-    const handle = this.exports.create_tcp_listener(hostPtr, options.port);
+    const handle = this.exports.create_tcp_listener(
+      host?.family ?? 0,
+      hostPtr,
+      options.port
+    );
+
+    if (Number(handle) === 0) throw new Error('failed to create tcp listener');
 
     const tcpListener = new VirtualTcpListener();
 
@@ -298,9 +328,22 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   }
 
   async connect(options: TcpConnectionOptions) {
-    using hostPtr = this.copyToMemory(await this.#resolveHost(options.host));
+    const host = await this.#resolveHost(options.host);
+    const address = formatAddress(host.family, host.bytes);
+    if (!this.#routes.lookup(address)) {
+      throw new NetworkError('ENETUNREACH', `no route to ${address}`);
+    }
+    using hostPtr = this.copyToMemory(host.bytes);
 
-    const handle = this.exports.create_tcp_connection(hostPtr, options.port);
+    const handle = this.exports.create_tcp_connection(
+      host.family,
+      hostPtr,
+      options.port
+    );
+
+    if (Number(handle) === 0) {
+      throw new NetworkError('ENETUNREACH', `no route to ${address}`);
+    }
 
     const tcpConnection = await this.#tcpConnectEvents.wait(handle);
 
@@ -309,6 +352,31 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     }
 
     return tcpConnection;
+  }
+
+  #getEndpoint(
+    handle: TcpConnectionHandle,
+    side: 'local' | 'remote'
+  ): IpEndpoint {
+    const family =
+      side === 'local'
+        ? this.exports.get_tcp_local_address_family(handle)
+        : this.exports.get_tcp_remote_address_family(handle);
+    const addressPtr =
+      side === 'local'
+        ? this.exports.get_tcp_local_address(handle)
+        : this.exports.get_tcp_remote_address(handle);
+    const port =
+      side === 'local'
+        ? this.exports.get_tcp_local_port(handle)
+        : this.exports.get_tcp_remote_port(handle);
+    return {
+      address: formatAddress(
+        family,
+        this.copyFromMemory(addressPtr, family === 4 ? 4 : 16)
+      ),
+      port,
+    };
   }
 }
 
@@ -350,8 +418,12 @@ export class VirtualTcpConnection
 
   readable: ReadableStream<Uint8Array>;
   writable: WritableStream<Uint8Array>;
+  readonly local: IpEndpoint;
+  readonly remote: IpEndpoint;
 
-  constructor() {
+  constructor(local: IpEndpoint, remote: IpEndpoint) {
+    this.local = local;
+    this.remote = remote;
     tcpConnectionHooks.setInner(this, {
       receive: async (data: Uint8Array) => {
         // We maintain our own receive buffer prior to enqueueing to the readable

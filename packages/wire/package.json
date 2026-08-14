@@ -4,7 +4,7 @@
   "description": "Wire protocol utilities for tcpip.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chipmk/tcpip.js.git",
+    "url": "https://github.com/codebutler/tcpip.js.git",
     "directory": "packages/wire"
   },
   "main": "dist/index.cjs",

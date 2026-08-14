@@ -7,11 +7,17 @@ import type {
 } from '@tcpip/transport';
 import type { IPv4Address, IPv4Cidr, MacAddress } from '@tcpip/wire';
 
-export type UdpDatagram = Datagram;
+export type IpCidr = string;
+
+export type UdpDatagram = Datagram & {
+  /** Destination endpoint on received datagrams. */
+  readonly local?: IpEndpoint;
+};
 
 export type UdpSocketOptions = DatagramSocketOptions;
 
 export type UdpSocket = DuplexStream<UdpDatagram> & {
+  readonly local: IpEndpoint;
   close(): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterator<UdpDatagram>;
 };
@@ -20,7 +26,14 @@ export type TcpListenerOptions = StreamListenOptions;
 
 export type TcpConnectionOptions = StreamConnectOptions;
 
+export type IpEndpoint = {
+  address: string;
+  port: number;
+};
+
 export type TcpConnection = DuplexStream<Uint8Array> & {
+  readonly local: IpEndpoint;
+  readonly remote: IpEndpoint;
   close(): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterator<Uint8Array>;
 };
@@ -86,7 +99,15 @@ export type LoopbackInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type LoopbackInterface = {
+export type InterfaceConfiguration = {
+  readonly addresses: readonly IpCidr[];
+  readonly mtu: number;
+  addAddress(cidr: IpCidr): Promise<void>;
+  removeAddress(cidr: IpCidr): Promise<void>;
+  setMtu(mtu: number): Promise<void>;
+};
+
+export type LoopbackInterface = InterfaceConfiguration & {
   readonly type: 'loopback';
   readonly ip?: IPv4Address;
   readonly netmask?: IPv4Address;
@@ -96,7 +117,7 @@ export type TunInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type TunInterface = {
+export type TunInterface = InterfaceConfiguration & {
   readonly type: 'tun';
   readonly ip?: IPv4Address;
   readonly netmask?: IPv4Address;
@@ -111,7 +132,7 @@ export type TapInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type TapInterface = {
+export type TapInterface = InterfaceConfiguration & {
   readonly type: 'tap';
   readonly mac: MacAddress;
   readonly ip?: IPv4Address;
@@ -128,7 +149,7 @@ export type BridgeInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type BridgeInterface = {
+export type BridgeInterface = InterfaceConfiguration & {
   readonly type: 'bridge';
   readonly mac: MacAddress;
   readonly ip?: IPv4Address;
@@ -140,6 +161,35 @@ export type NetworkInterface =
   | TunInterface
   | TapInterface
   | BridgeInterface;
+
+export type RouteSource = 'connected' | 'static';
+
+export type RouteSpec = {
+  destination: string;
+  via: NetworkInterface;
+  metric?: number;
+  /** @internal Connected routes are installed by interface address management. */
+  source?: RouteSource;
+};
+
+export type RouteSnapshot = {
+  family: 4 | 6;
+  destination: string;
+  prefixLength: number;
+  via: NetworkInterface;
+  metric: number;
+  source: RouteSource;
+};
+
+export type RouteHandle = {
+  dispose(): void;
+};
+
+export type Routes = {
+  add(spec: RouteSpec): RouteHandle;
+  list(): readonly RouteSnapshot[];
+  lookup(address: string): RouteSnapshot | null;
+};
 
 export type NetworkInterfaces = Iterable<NetworkInterface> & {
   createLoopback(options: LoopbackInterfaceOptions): Promise<LoopbackInterface>;
@@ -155,6 +205,7 @@ export type NetworkStack = {
   readonly udp: UdpTransport;
   readonly ping: PingApi;
   readonly interfaces: NetworkInterfaces;
+  readonly routes: Routes;
 
   /**
    * @deprecated Use `stack.interfaces.createLoopback()` instead.

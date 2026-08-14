@@ -385,4 +385,54 @@ describe('DhcpServer', () => {
 
     await socket.close();
   });
+
+  it('should answer DHCPINFORM without allocating a lease', async () => {
+    const { server, socket } = await createTestServer();
+
+    socket.receive(
+      createClientMessage({
+        mac: '00:11:22:33:44:55',
+        type: DhcpMessageTypes.INFORM,
+        ciaddr: '192.168.1.50',
+      })
+    );
+    const reply = await socket.nextReply();
+    const ack = parseDhcpMessage(reply.data);
+
+    expect(reply.host).toBe('192.168.1.50');
+    expect(ack.type).toBe('ACK');
+    expect(ack.yiaddr).toBe('0.0.0.0');
+    expect(server.leases.size).toBe(0);
+    await socket.close();
+  });
+
+  it('should release a declined offer for another client', async () => {
+    const { socket } = await createTestServer({
+      ...defaultOptions,
+      leaseRange: { start: '192.168.1.100', end: '192.168.1.100' },
+    });
+
+    socket.receive(
+      createClientMessage({
+        mac: '00:11:22:33:44:55',
+        type: DhcpMessageTypes.DISCOVER,
+      })
+    );
+    expect((await socket.nextReplyMessage()).yiaddr).toBe('192.168.1.100');
+    socket.receive(
+      createClientMessage({
+        mac: '00:11:22:33:44:55',
+        type: DhcpMessageTypes.DECLINE,
+      })
+    );
+    socket.receive(
+      createClientMessage({
+        mac: '00:11:22:33:44:66',
+        type: DhcpMessageTypes.DISCOVER,
+      })
+    );
+
+    expect((await socket.nextReplyMessage()).yiaddr).toBe('192.168.1.100');
+    await socket.close();
+  });
 });

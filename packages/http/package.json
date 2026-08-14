@@ -4,7 +4,7 @@
   "description": "HTTP client and server built on tcpip.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chipmk/tcpip.js.git",
+    "url": "https://github.com/codebutler/tcpip.js.git",
     "directory": "packages/http"
   },
   "main": "dist/index.cjs",
