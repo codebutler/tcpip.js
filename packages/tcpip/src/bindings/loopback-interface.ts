@@ -76,6 +76,11 @@ export class LoopbackBindings extends Bindings<
     },
   };
 
+  override dispose(error?: Error) {
+    this.interfaces.clear();
+    super.dispose(error);
+  }
+
   async create(options: LoopbackInterfaceOptions) {
     const { ipAddress, netmask } = options.ip
       ? serializeIPv4Cidr(options.ip)

@@ -51,6 +51,11 @@ export class BridgeBindings extends Bindings<BridgeImports, BridgeExports> {
 
   imports = {};
 
+  override dispose(error?: Error) {
+    this.interfaces.clear();
+    super.dispose(error);
+  }
+
   async create(options: BridgeInterfaceOptions) {
     const macAddress = options.mac
       ? serializeMacAddress(options.mac)

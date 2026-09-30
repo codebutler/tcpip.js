@@ -85,6 +85,16 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
     this.#routes = routes;
   }
 
+  override dispose(error?: Error) {
+    super.dispose(error);
+    for (const pending of this.#pendingPings.values()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(this.disposedError!);
+    }
+    this.#pendingPings.clear();
+    this.#handles.clear();
+  }
+
   imports = {
     receive_icmp_echo_reply: (
       _handle: IcmpSocketHandle,
@@ -118,13 +128,18 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
         roundTripTime: Date.now() - pendingPing.startedAt,
       };
 
-      nextMicrotask().then(() => pendingPing.resolve(reply));
+      nextMicrotask().then(() => {
+        if (this.disposedError) pendingPing.reject(this.disposedError);
+        else pendingPing.resolve(reply);
+      });
       return 1;
     },
   };
 
   async createPingSession(options: PingSessionOptions) {
+    this.assertActive();
     const resolvedHost = await this.#resolveHost(options.host);
+    this.assertActive();
     const host = formatAddress(resolvedHost.family, resolvedHost.bytes);
     if (!this.#routes.lookup(host)) {
       throw new NetworkError('ENETUNREACH', `no route to ${host}`);
@@ -134,6 +149,7 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
 
     this.#getHandle(resolvedHost.family);
 
+    this.assertActive();
     const pingSession = new VirtualPingSession({
       host,
       identifier,
@@ -142,6 +158,7 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
 
     pingSessionHooks.setOuter(pingSession, {
       send: async (sequenceNumber, options = {}) => {
+        this.assertActive();
         const payload = options.payload ?? DEFAULT_PAYLOAD;
         const timeout = options.timeout ?? defaultTimeout;
 

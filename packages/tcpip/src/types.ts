@@ -226,6 +226,11 @@ export type NetworkInterfaces = Iterable<NetworkInterface> & {
 };
 
 export type NetworkStack = {
+  /**
+   * Terminal shutdown. Stops packet processing and settles owned sockets and
+   * pending operations without waiting for peers. Safe to call repeatedly.
+   */
+  dispose(): Promise<void>;
   readonly ready: Promise<void>;
   readonly tcp: TcpTransport;
   readonly udp: UdpTransport;

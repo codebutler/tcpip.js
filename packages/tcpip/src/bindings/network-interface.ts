@@ -131,17 +131,18 @@ export class NetworkInterfaceBindings extends Bindings<
     }
   }
 
-  detach(netInterface: NetworkInterface) {
-    const state = getState(netInterface);
-    if (state.detached) return;
-    this.exports.set_interface_router_advertisements(
-      state.handle,
-      null,
-      null,
-      null,
-      null,
-      0
-    );
+  detach(netInterface: NetworkInterface, terminal = false) {
+    const state = terminal ? states.get(netInterface) : getState(netInterface);
+    if (!state || state.detached) return;
+    if (!terminal)
+      this.exports.set_interface_router_advertisements(
+        state.handle,
+        null,
+        null,
+        null,
+        null,
+        0
+      );
     state.detached = true;
     for (const route of state.connectedRoutes.values()) {
       route.handle.dispose();

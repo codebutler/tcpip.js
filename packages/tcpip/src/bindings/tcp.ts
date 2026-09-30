@@ -22,6 +22,7 @@ type TcpConnectionHandle = Pointer;
 type TcpListenerOuterHooks = {};
 
 type TcpListenerInnerHooks = {
+  dispose(): void;
   accept(connection: TcpConnection): void;
 };
 
@@ -33,6 +34,7 @@ type TcpConnectionOuterHooks = {
 };
 
 type TcpConnectionInnerHooks = {
+  dispose(error: Error): void;
   receive(data: Uint8Array): Promise<void>;
   close(): Promise<void>;
 };
@@ -96,12 +98,15 @@ export type TcpExports = {
   get_tcp_remote_port(handle: TcpConnectionHandle): number;
 };
 
+type AckWaiter = { resolve(length: number): void; reject(error: Error): void };
+type AckWaiters = Map<TcpConnectionHandle, Set<AckWaiter>>;
+
 export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   #tcpListeners = new Map<TcpListenerHandle, TcpListener>();
   #tcpConnections = new Map<TcpConnectionHandle, TcpConnection>();
   #tcpConnectEvents = new EventMap<TcpConnectionHandle, TcpConnection>();
-  #tcpAcks = new Map<TcpConnectionHandle, (length: number) => void>();
-  #tcpCloseAcks = new Map<TcpConnectionHandle, () => void>();
+  #tcpAcks: AckWaiters = new Map();
+  #tcpCloseAcks: AckWaiters = new Map();
   #dnsClient: DnsClient;
   #routes: RouteTable;
 
@@ -120,6 +125,34 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     this.#routes = routes;
   }
 
+  override dispose(error?: Error) {
+    super.dispose(error);
+    this.#tcpConnectEvents.rejectAll(this.disposedError!);
+    for (const map of [this.#tcpAcks, this.#tcpCloseAcks]) {
+      for (const waiters of map.values()) {
+        for (const waiter of waiters) waiter.reject(this.disposedError!);
+      }
+      map.clear();
+    }
+    for (const listener of this.#tcpListeners.values()) {
+      tcpListenerHooks.getInner(listener).dispose();
+    }
+    for (const connection of this.#tcpConnections.values()) {
+      tcpConnectionHooks.getInner(connection).dispose(this.disposedError!);
+    }
+    this.#tcpListeners.clear();
+    this.#tcpConnections.clear();
+  }
+
+  #waitForAck(map: AckWaiters, handle: TcpConnectionHandle) {
+    this.assertActive();
+    return new Promise<number>((resolve, reject) => {
+      const waiters = map.get(handle) ?? new Set();
+      waiters.add({ resolve, reject });
+      map.set(handle, waiters);
+    });
+  }
+
   async #closeConnection(handle: TcpConnectionHandle) {
     while (true) {
       const result = this.exports.close_tcp_connection(handle);
@@ -132,9 +165,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
         throw new Error(`failed to close tcp connection: ${result}`);
       }
 
-      await new Promise<void>((resolve) => {
-        this.#tcpCloseAcks.set(handle, resolve);
-      });
+      await this.#waitForAck(this.#tcpCloseAcks, handle);
     }
   }
 
@@ -150,9 +181,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
         throw new Error(`failed to shutdown tcp write side: ${result}`);
       }
 
-      await new Promise<void>((resolve) => {
-        this.#tcpCloseAcks.set(handle, resolve);
-      });
+      await this.#waitForAck(this.#tcpCloseAcks, handle);
     }
   }
 
@@ -175,7 +204,8 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
 
       tcpConnectionHooks.setOuter(connection, {
         send: async (data) => {
-          const dataPtr = Number(this.copyToMemory(data));
+          using pointer = this.copyToMemory(data);
+          const dataPtr = Number(pointer);
 
           let bytesQueued = this.exports.send_tcp_chunk(
             connectionHandle,
@@ -186,9 +216,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
           // If the entire data was not queued, send the remaining
           // chunks as space becomes available
           while (bytesQueued < data.length) {
-            await new Promise<number>((resolve) => {
-              this.#tcpAcks.set(connectionHandle, resolve);
-            });
+            await this.#waitForAck(this.#tcpAcks, connectionHandle);
             const bytesRemaining = data.length - bytesQueued;
 
             bytesQueued += this.exports.send_tcp_chunk(
@@ -214,6 +242,11 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues.
       // The handle is registered first so early peer data is not dropped.
       await nextMicrotask();
+      if (
+        this.disposedError ||
+        this.#tcpListeners.get(listenerHandle) !== listener
+      )
+        return;
 
       tcpListenerHooks.getInner(listener).accept(connection);
     },
@@ -225,7 +258,8 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
 
       tcpConnectionHooks.setOuter(connection, {
         send: async (data) => {
-          const dataPtr = Number(this.copyToMemory(data));
+          using pointer = this.copyToMemory(data);
+          const dataPtr = Number(pointer);
 
           let bytesQueued = this.exports.send_tcp_chunk(
             handle,
@@ -236,9 +270,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
           // If the entire data was not queued, send the remaining
           // chunks as space becomes available
           while (bytesQueued < data.length) {
-            await new Promise<number>((resolve) => {
-              this.#tcpAcks.set(handle, resolve);
-            });
+            await this.#waitForAck(this.#tcpAcks, handle);
             const bytesRemaining = data.length - bytesQueued;
 
             bytesQueued += this.exports.send_tcp_chunk(
@@ -264,6 +296,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues.
       // The handle is registered first so early peer data is not dropped.
       await nextMicrotask();
+      if (this.disposedError) return;
 
       this.#tcpConnectEvents.set(handle, connection);
     },
@@ -292,22 +325,24 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
 
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues
       await nextMicrotask();
+      if (this.disposedError || this.#tcpConnections.get(handle) !== connection)
+        return;
 
       tcpConnectionHooks.getInner(connection).receive(new Uint8Array(chunk));
     },
     sent_tcp_chunk: (handle: TcpConnectionHandle, length: number) => {
-      const notifyAck = this.#tcpAcks.get(handle);
-      this.#tcpAcks.delete(handle);
-      notifyAck?.(length);
-
-      const notifyCloseAck = this.#tcpCloseAcks.get(handle);
-      this.#tcpCloseAcks.delete(handle);
-      notifyCloseAck?.();
+      for (const map of [this.#tcpAcks, this.#tcpCloseAcks]) {
+        const waiters = map.get(handle);
+        map.delete(handle);
+        for (const waiter of waiters ?? []) waiter.resolve(length);
+      }
     },
   };
 
   async listen(options: TcpListenerOptions) {
+    this.assertActive();
     const host = options.host ? await this.#resolveHost(options.host) : null;
+    this.assertActive();
     using hostPtr = host ? this.copyToMemory(host.bytes) : null;
 
     const handle = this.exports.create_tcp_listener(
@@ -328,7 +363,9 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   }
 
   async connect(options: TcpConnectionOptions) {
+    this.assertActive();
     const host = await this.#resolveHost(options.host);
+    this.assertActive();
     const address = formatAddress(host.family, host.bytes);
     if (!this.#routes.lookup(address)) {
       throw new NetworkError('ENETUNREACH', `no route to ${address}`);
@@ -346,6 +383,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     }
 
     const tcpConnection = await this.#tcpConnectEvents.wait(handle);
+    this.assertActive();
 
     if (!tcpConnection) {
       throw new Error('tcp failed to connect');
@@ -384,25 +422,37 @@ export class VirtualTcpListener
   implements TcpListener, AsyncIterable<TcpConnection>
 {
   #connections: TcpConnection[] = [];
-  #notifyConnection?: () => void;
+  #notifyConnections = new Set<() => void>();
+  #disposed = false;
 
   constructor() {
     tcpListenerHooks.setInner(this, {
-      accept: async (connection: TcpConnection) => {
+      dispose: () => {
+        this.#disposed = true;
+        this.#connections = [];
+        for (const notify of this.#notifyConnections) notify();
+        this.#notifyConnections.clear();
+      },
+      accept: (connection: TcpConnection) => {
+        if (this.#disposed) return;
         this.#connections.push(connection);
-        this.#notifyConnection?.();
+        for (const notify of this.#notifyConnections) notify();
+        this.#notifyConnections.clear();
       },
     });
   }
 
   async *[Symbol.asyncIterator](): AsyncIterableIterator<TcpConnection> {
-    while (true) {
-      await new Promise<void>((resolve) => {
-        this.#notifyConnection = resolve;
-      });
-
-      yield* this.#connections;
-      this.#connections = [];
+    while (!this.#disposed) {
+      if (this.#connections.length === 0) {
+        await new Promise<void>((resolve) =>
+          this.#notifyConnections.add(resolve)
+        );
+      }
+      if (this.#disposed) return;
+      while (this.#connections.length && !this.#disposed) {
+        yield this.#connections.shift()!;
+      }
     }
   }
 }
@@ -415,6 +465,7 @@ export class VirtualTcpConnection
   #writableController?: WritableStreamDefaultController;
   #remoteClosed = false;
   #readableClosed = false;
+  #disposed = false;
 
   readable: ReadableStream<Uint8Array>;
   writable: WritableStream<Uint8Array>;
@@ -425,7 +476,15 @@ export class VirtualTcpConnection
     this.local = local;
     this.remote = remote;
     tcpConnectionHooks.setInner(this, {
+      dispose: (error) => {
+        if (this.#disposed) return;
+        this.#disposed = true;
+        this.#receiveBuffer = [];
+        this.#errorReadable(error);
+        this.#writableController?.error(error);
+      },
       receive: async (data: Uint8Array) => {
+        if (this.#disposed) return;
         // We maintain our own receive buffer prior to enqueueing to the readable
         // stream so that we can send window updates as data is consumed
         this.#receiveBuffer.push(data);
@@ -433,6 +492,7 @@ export class VirtualTcpConnection
       },
       close: async () => {
         await nextMicrotask();
+        if (this.#disposed) return;
         this.#remoteClosed = true;
         this.#enqueueBuffer();
       },
@@ -496,6 +556,7 @@ export class VirtualTcpConnection
   }
 
   #enqueueBuffer() {
+    if (this.#disposed) return;
     if (this.#remoteClosed && this.#receiveBuffer.length === 0) {
       this.#closeReadable();
       this.#writableController?.error(new Error('tcp connection closed'));
@@ -538,6 +599,7 @@ export class VirtualTcpConnection
   }
 
   async close() {
+    if (this.#disposed) return;
     await tcpConnectionHooks.getOuter(this).close();
     this.#errorReadable(new Error('tcp connection closed'));
     this.#writableController?.error(new Error('tcp connection closed'));

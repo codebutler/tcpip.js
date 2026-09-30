@@ -22,6 +22,7 @@ type UdpSocketOuterHooks = {
 };
 
 type UdpSocketInnerHooks = {
+  dispose(error: Error): void;
   receive(datagram: UdpDatagram): Promise<void>;
 };
 
@@ -112,6 +113,7 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
 
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues
       await nextMicrotask();
+      if (this.disposedError || this.#udpSockets.get(handle) !== socket) return;
 
       udpSocketHooks.getInner(socket).receive({
         host: formatAddress(family, host),
@@ -125,8 +127,18 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
     },
   };
 
+  override dispose(error?: Error) {
+    super.dispose(error);
+    for (const socket of this.#udpSockets.values()) {
+      udpSocketHooks.getInner(socket).dispose(this.disposedError!);
+    }
+    this.#udpSockets.clear();
+  }
+
   async open(options: UdpSocketOptions) {
+    this.assertActive();
     const host = options.host ? await this.#resolveHost(options.host) : null;
+    this.assertActive();
     using hostPtr = host ? this.copyToMemory(host.bytes) : null;
 
     const handle = this.exports.open_udp_socket(
@@ -151,7 +163,9 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
 
     udpSocketHooks.setOuter(udpSocket, {
       send: async (datagram: UdpDatagram) => {
+        this.assertActive();
         const host = await this.#resolveHost(datagram.host);
+        this.assertActive();
         const address = formatAddress(host.family, host.bytes);
         const route = this.#routes.lookup(address);
         const isLimitedBroadcast = address === '255.255.255.255';
@@ -188,6 +202,7 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
         }
       },
       close: async () => {
+        if (this.disposedError || !this.#udpSockets.has(handle)) return;
         this.exports.close_udp_socket(handle);
         this.#udpSockets.delete(handle);
       },
@@ -202,6 +217,7 @@ export class UdpBindings extends Bindings<UdpImports, UdpExports> {
 export class VirtualUdpSocket implements UdpSocket, AsyncIterable<UdpDatagram> {
   #readableController?: ReadableStreamDefaultController<UdpDatagram>;
   #writableController?: WritableStreamDefaultController;
+  #closed = false;
 
   readable: ReadableStream<UdpDatagram>;
   writable: WritableStream<UdpDatagram>;
@@ -210,7 +226,16 @@ export class VirtualUdpSocket implements UdpSocket, AsyncIterable<UdpDatagram> {
   constructor(local: IpEndpoint) {
     this.local = local;
     udpSocketHooks.setInner(this, {
+      dispose: (error) => {
+        if (this.#closed) return;
+        this.#closed = true;
+        try {
+          this.#readableController?.close();
+        } catch {}
+        this.#writableController?.error(error);
+      },
       receive: async (datagram: UdpDatagram) => {
+        if (this.#closed) return;
         if (!this.#readableController) {
           throw new Error('readable controller not initialized');
         }
@@ -235,6 +260,8 @@ export class VirtualUdpSocket implements UdpSocket, AsyncIterable<UdpDatagram> {
   }
 
   async close() {
+    if (this.#closed) return;
+    this.#closed = true;
     await udpSocketHooks.getOuter(this).close();
     this.#readableController?.error(new Error('udp socket closed'));
     this.#writableController?.error(new Error('udp socket closed'));

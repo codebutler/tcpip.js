@@ -11,6 +11,7 @@ import { TunBindings } from './bindings/tun-interface.js';
 import type { WasmInstance } from './bindings/types.js';
 import { UdpBindings } from './bindings/udp.js';
 import { fetchFile } from './fetch-file.js';
+import { NetworkError } from './network-error.js';
 import { RouteTable } from './routes.js';
 import type {
   NetworkInterface,
@@ -47,7 +48,9 @@ export type NetworkStackOptions = {
 
 export class VirtualNetworkStack implements NetworkStack {
   #options: NetworkStackOptions;
-  #loopIntervalId?: number;
+  #loopIntervalId?: ReturnType<typeof setInterval>;
+  #disposedError?: Error;
+  #disposePromise?: Promise<void>;
   #dnsClient: DnsClient;
 
   #loopbackBindings: LoopbackBindings;
@@ -88,53 +91,71 @@ export class VirtualNetworkStack implements NetworkStack {
 
     this.tcp = {
       connect: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         return this.#tcpBindings.connect(options);
       },
       listen: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         return this.#tcpBindings.listen(options);
       },
     };
     this.udp = {
       open: async (options = {}) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         return this.#udpBindings.open(options);
       },
     };
     this.ping = {
       createSession: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         return this.#icmpBindings.createPingSession(options);
       },
     };
     this.interfaces = {
       createLoopback: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         const netInterface = await this.#loopbackBindings.create(options);
         this.#attachInterface(netInterface, options.ip);
         return netInterface;
       },
       createTun: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         const netInterface = await this.#tunBindings.create(options);
         this.#attachInterface(netInterface, options.ip);
         return netInterface;
       },
       createTap: async (options = {}) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         const netInterface = await this.#tapBindings.create(options);
         this.#attachInterface(netInterface, options.ip);
         return netInterface;
       },
       createBridge: async (options) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
         const netInterface = await this.#bridgeBindings.create(options);
         this.#attachInterface(netInterface, options.ip);
         return netInterface;
       },
       remove: async (netInterface) => {
+        this.#assertActive();
         await this.ready;
+        this.#assertActive();
 
         this.#networkInterfaceBindings.detach(netInterface);
         this.routes.removeInterface(netInterface);
@@ -162,7 +183,53 @@ export class VirtualNetworkStack implements NetworkStack {
     this.#icmpBindings = new IcmpBindings(this.#dnsClient, this.routes);
 
     // Initialize the stack
-    this.ready = this.#init();
+    this.ready = this.#init().catch((error) => {
+      this.#terminate();
+      throw error;
+    });
+  }
+
+  dispose(): Promise<void> {
+    if (!this.#disposePromise) {
+      this.#terminate();
+      // An in-flight loader may finish, but the terminal guard prevents it
+      // from registering an instance or installing a late packet timer.
+      this.#disposePromise = this.ready.then(
+        () => {},
+        () => {}
+      );
+    }
+    return this.#disposePromise;
+  }
+
+  #assertActive() {
+    if (this.#disposedError) throw this.#disposedError;
+  }
+
+  #terminate() {
+    if (this.#disposedError) return;
+    const error = new NetworkError('ENETDOWN', 'network stack disposed');
+    this.#disposedError = error;
+    if (this.#loopIntervalId !== undefined) {
+      clearInterval(this.#loopIntervalId);
+      this.#loopIntervalId = undefined;
+    }
+    for (const netInterface of this.#listInterfaces()) {
+      this.#networkInterfaceBindings.detach(netInterface, true);
+      this.routes.removeInterface(netInterface);
+    }
+    for (const bindings of [
+      this.#tcpBindings,
+      this.#udpBindings,
+      this.#icmpBindings,
+      this.#loopbackBindings,
+      this.#tunBindings,
+      this.#tapBindings,
+      this.#bridgeBindings,
+      this.#networkInterfaceBindings,
+      this.#routeBindings,
+    ])
+      bindings.dispose(error);
   }
 
   async #init() {
@@ -200,6 +267,7 @@ export class VirtualNetworkStack implements NetworkStack {
       },
     });
 
+    this.#assertActive();
     const wasmInstance = instance as WasmInstance;
 
     this.#loopbackBindings.register(wasmInstance.exports);
@@ -223,16 +291,16 @@ export class VirtualNetworkStack implements NetworkStack {
       const loopback = await this.#loopbackBindings.create({ ip });
       this.#attachInterface(loopback, ip);
       await loopback.addAddress('::1/128');
+      this.#assertActive();
     }
 
     // Call lwIP's main loop regularly (required in NO_SYS mode)
     // Used to process queued packets (eg. loopback) and expired timeouts
-    this.#loopIntervalId = Number(
-      setInterval(() => {
-        wasmInstance.exports.process_queued_packets();
-        wasmInstance.exports.process_timeouts();
-      }, 100)
-    );
+    this.#loopIntervalId = setInterval(() => {
+      if (this.#disposedError) return;
+      wasmInstance.exports.process_queued_packets();
+      if (!this.#disposedError) wasmInstance.exports.process_timeouts();
+    }, 100);
   }
 
   *#listInterfaces(): IterableIterator<NetworkInterface> {
@@ -243,6 +311,7 @@ export class VirtualNetworkStack implements NetworkStack {
   }
 
   #interfaceHandle(netInterface: NetworkInterface): number {
+    this.#assertActive();
     for (const bindings of [
       this.#loopbackBindings,
       this.#tunBindings,
@@ -257,6 +326,7 @@ export class VirtualNetworkStack implements NetworkStack {
   }
 
   #attachInterface(netInterface: NetworkInterface, initialAddress?: string) {
+    this.#assertActive();
     this.#networkInterfaceBindings.attach(
       netInterface,
       this.#interfaceHandle(netInterface),

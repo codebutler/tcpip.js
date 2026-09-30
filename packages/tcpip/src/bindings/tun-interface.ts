@@ -20,6 +20,7 @@ type TunInterfaceOuterHooks = {
 };
 
 type TunInterfaceInnerHooks = {
+  dispose(error: Error): void;
   receivePacket(packet: Uint8Array): void;
 };
 
@@ -98,6 +99,7 @@ export class TunBindings extends Bindings<TunImports, TunExports> {
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues
       // This also gives the consumer a chance to start listening before we enqueue the first packet
       await nextMicrotask();
+      if (this.disposedError) return;
 
       const tunInterface = this.interfaces.get(handle);
 
@@ -111,6 +113,14 @@ export class TunBindings extends Bindings<TunImports, TunExports> {
         .receivePacket(new Uint8Array(packet));
     },
   };
+
+  override dispose(error?: Error) {
+    super.dispose(error);
+    for (const netInterface of this.interfaces.values()) {
+      tunInterfaceHooks.getInner(netInterface).dispose(this.disposedError!);
+    }
+    this.interfaces.clear();
+  }
 
   async create(options: TunInterfaceOptions) {
     const { ipAddress, netmask } = options.ip
@@ -151,6 +161,8 @@ export class VirtualTunInterface
 {
   #readableController?: ReadableStreamController<Uint8Array>;
   #isListening = false;
+  #disposed = false;
+  #writableController?: WritableStreamDefaultController;
 
   readonly type = 'tun' as const;
   get ip(): IPv4Address | undefined {
@@ -165,10 +177,18 @@ export class VirtualTunInterface
   constructor() {
     super();
     tunInterfaceHooks.setInner(this, {
+      dispose: (error) => {
+        if (this.#disposed) return;
+        this.#disposed = true;
+        try {
+          this.#readableController?.close();
+        } catch {}
+        this.#writableController?.error(error);
+      },
       receivePacket: async (packet: Uint8Array<ArrayBuffer>) => {
         // Do not buffer packets until the consumer signals intent
         // to listen - otherwise memory will grow indefinitely
-        if (!this.#isListening) {
+        if (this.#disposed || !this.#isListening) {
           return;
         }
 
@@ -192,6 +212,9 @@ export class VirtualTunInterface
     });
 
     this.writable = new WritableStream({
+      start: (controller) => {
+        this.#writableController = controller;
+      },
       write: (packet) => {
         tunInterfaceHooks.getOuter(this).sendPacket(packet);
       },

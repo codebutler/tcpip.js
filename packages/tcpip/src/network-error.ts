@@ -1,4 +1,4 @@
-export type NetworkErrorCode = 'ENETUNREACH' | 'EMSGSIZE';
+export type NetworkErrorCode = 'ENETUNREACH' | 'EMSGSIZE' | 'ENETDOWN';
 
 export class NetworkError extends Error {
   readonly code: NetworkErrorCode;
