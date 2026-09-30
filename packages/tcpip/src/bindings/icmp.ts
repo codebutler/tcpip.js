@@ -1,11 +1,9 @@
 import type { DnsClient } from '@tcpip/dns';
-import {
-  ICMP_ECHO_HEADER_LENGTH,
-  IPV4_HEADER_LENGTH,
-  parseIPv4Address,
-  serializeIPv4Address,
-} from '@tcpip/wire';
+import { ICMP_ECHO_HEADER_LENGTH, IPV4_HEADER_LENGTH } from '@tcpip/wire';
+import { formatAddress, parseAddress } from '../ip.js';
 import { LwipError } from '../lwip/errors.js';
+import { NetworkError } from '../network-error.js';
+import type { RouteTable } from '../routes.js';
 import type {
   PingProbeOptions,
   PingReply,
@@ -46,6 +44,7 @@ type PendingPing = {
 export type IcmpImports = {
   receive_icmp_echo_reply(
     handle: IcmpSocketHandle,
+    family: 4 | 6,
     hostPtr: number,
     identifier: number,
     sequenceNumber: number,
@@ -55,10 +54,11 @@ export type IcmpImports = {
 };
 
 export type IcmpExports = {
-  open_icmp_socket(): IcmpSocketHandle;
+  open_icmp_socket(family: 4 | 6): IcmpSocketHandle;
   close_icmp_socket(handle: IcmpSocketHandle): void;
   send_icmp_echo_request(
     handle: IcmpSocketHandle,
+    family: 4 | 6,
     host: Pointer,
     identifier: number,
     sequenceNumber: number,
@@ -75,24 +75,40 @@ const MAX_ICMP_ECHO_PAYLOAD_LENGTH =
 
 export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
   #dnsClient: DnsClient;
-  #handle?: IcmpSocketHandle;
+  #routes: RouteTable;
+  #handles = new Map<4 | 6, IcmpSocketHandle>();
   #pendingPings = new Map<string, PendingPing>();
 
-  constructor(dnsClient: DnsClient) {
+  constructor(dnsClient: DnsClient, routes: RouteTable) {
     super();
     this.#dnsClient = dnsClient;
+    this.#routes = routes;
+  }
+
+  override dispose(error?: Error) {
+    super.dispose(error);
+    for (const pending of this.#pendingPings.values()) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(this.disposedError!);
+    }
+    this.#pendingPings.clear();
+    this.#handles.clear();
   }
 
   imports = {
     receive_icmp_echo_reply: (
       _handle: IcmpSocketHandle,
+      family: 4 | 6,
       hostPtr: number,
       identifier: number,
       sequenceNumber: number,
       payloadPtr: number,
       length: number
     ) => {
-      const host = parseIPv4Address(this.copyFromMemory(hostPtr, 4));
+      const host = formatAddress(
+        family,
+        this.copyFromMemory(hostPtr, family === 4 ? 4 : 16)
+      );
       const payload = this.copyFromMemory(payloadPtr, length);
       const key = this.#getPendingKey(host, identifier, sequenceNumber);
       const pendingPing = this.#pendingPings.get(key);
@@ -112,18 +128,28 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
         roundTripTime: Date.now() - pendingPing.startedAt,
       };
 
-      nextMicrotask().then(() => pendingPing.resolve(reply));
+      nextMicrotask().then(() => {
+        if (this.disposedError) pendingPing.reject(this.disposedError);
+        else pendingPing.resolve(reply);
+      });
       return 1;
     },
   };
 
   async createPingSession(options: PingSessionOptions) {
-    const host = await this.#resolveHost(options.host);
+    this.assertActive();
+    const resolvedHost = await this.#resolveHost(options.host);
+    this.assertActive();
+    const host = formatAddress(resolvedHost.family, resolvedHost.bytes);
+    if (!this.#routes.lookup(host)) {
+      throw new NetworkError('ENETUNREACH', `no route to ${host}`);
+    }
     const identifier = this.#createIdentifier();
     const defaultTimeout = options.timeout ?? DEFAULT_TIMEOUT;
 
-    this.#getHandle();
+    this.#getHandle(resolvedHost.family);
 
+    this.assertActive();
     const pingSession = new VirtualPingSession({
       host,
       identifier,
@@ -132,6 +158,7 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
 
     pingSessionHooks.setOuter(pingSession, {
       send: async (sequenceNumber, options = {}) => {
+        this.assertActive();
         const payload = options.payload ?? DEFAULT_PAYLOAD;
         const timeout = options.timeout ?? defaultTimeout;
 
@@ -162,11 +189,12 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
           });
 
           try {
-            using hostPtr = this.copyToMemory(serializeIPv4Address(host));
+            using hostPtr = this.copyToMemory(resolvedHost.bytes);
             using payloadPtr = this.copyToMemory(payload);
 
             const result = this.exports.send_icmp_echo_request(
-              this.#getHandle(),
+              this.#getHandle(resolvedHost.family),
+              resolvedHost.family,
               hostPtr,
               identifier,
               sequenceNumber,
@@ -203,26 +231,26 @@ export class IcmpBindings extends Bindings<IcmpImports, IcmpExports> {
     return pingSession;
   }
 
-  #getHandle() {
-    if (!this.#handle) {
-      const handle = this.exports.open_icmp_socket();
+  #getHandle(family: 4 | 6) {
+    let handle = this.#handles.get(family);
+    if (!handle) {
+      handle = this.exports.open_icmp_socket(family);
 
       if (Number(handle) === 0) {
         throw new Error('failed to open icmp socket');
       }
 
-      this.#handle = handle;
+      this.#handles.set(family, handle);
     }
 
-    return this.#handle;
+    return handle;
   }
 
   async #resolveHost(host: string) {
     try {
-      serializeIPv4Address(host);
-      return host;
-    } catch (e) {
-      return await this.#dnsClient.lookup(host);
+      return parseAddress(host);
+    } catch {
+      return parseAddress(await this.#dnsClient.lookup(host));
     }
   }
 

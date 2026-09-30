@@ -4,6 +4,8 @@
 #include "lwip/netif.h"
 #include "macros.h"
 #include "netif/etharp.h"
+#include "netif/ethernet.h"
+#include "lwip/ethip6.h"
 
 extern void register_tap_interface(struct netif *netif);
 extern void receive_frame(struct netif *netif, const uint8_t *frame, uint16_t length);
@@ -15,10 +17,13 @@ err_t tap_interface_output(struct netif *netif, struct pbuf *p) {
 
 static err_t tap_interface_init(struct netif *netif) {
   // Set interface flags
-  netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET;
+  netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET | NETIF_FLAG_MLD6;
 
-  // Wrap outgoing IP packets in Ethernet frames (MACs resolved via ARP)
+  // Wrap outgoing IP packets in Ethernet frames (MACs resolved via ARP / ND)
   netif->output = etharp_output;
+#if LWIP_IPV6
+  netif->output_ip6 = ethip6_output;
+#endif
 
   // Setup callback for outgoing Ethernet frames
   netif->linkoutput = tap_interface_output;
@@ -60,6 +65,10 @@ struct netif *create_tap_interface(const uint8_t mac_address[6], const uint8_t i
   netif_add(netif, ip4_addr, netmask_addr, NULL, NULL, tap_interface_init, netif_input);
   netif_set_link_up(netif);
   netif_set_up(netif);
+#if LWIP_IPV6
+  netif_create_ip6_linklocal_address(netif, 1);
+  netif_ip6_addr_set_state(netif, 0, IP6_ADDR_PREFERRED);
+#endif
 
   return netif;
 }

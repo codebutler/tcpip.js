@@ -2,6 +2,8 @@ import type { UniquePointer } from '../util.js';
 import type { BridgeExports } from './bridge-interface.js';
 import type { IcmpExports } from './icmp.js';
 import type { LoopbackExports } from './loopback-interface.js';
+import type { NetworkInterfaceExports } from './network-interface.js';
+import type { RouteExports } from './routes.js';
 import type { TapExports } from './tap-interface.js';
 import type { TcpExports } from './tcp.js';
 import type { TunExports } from './tun-interface.js';
@@ -34,13 +36,15 @@ export type WasmExports = WasiExports &
   SysExports &
   StackExports &
   CommonExports &
+  NetworkInterfaceExports &
   LoopbackExports &
   TunExports &
   TapExports &
   BridgeExports &
   TcpExports &
   UdpExports &
-  IcmpExports;
+  IcmpExports &
+  RouteExports;
 
 export type WasmInstance = {
   exports: WasmExports;

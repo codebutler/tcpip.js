@@ -12,6 +12,7 @@ import { LwipError } from '../lwip/errors.js';
 import type { TapInterface, TapInterfaceOptions } from '../types.js';
 import { ExtendedReadableStream, Hooks, nextMicrotask } from '../util.js';
 import { Bindings } from './base.js';
+import { VirtualNetworkInterface } from './network-interface.js';
 import type { Pointer } from './types.js';
 
 type TapInterfaceHandle = Pointer;
@@ -25,6 +26,7 @@ type TapInterfaceOuterHooks = {
 };
 
 type TapInterfaceInnerHooks = {
+  dispose(error: Error): void;
   receiveFrame(frame: Uint8Array): void;
 };
 
@@ -120,6 +122,7 @@ export class TapBindings extends Bindings<TapImports, TapExports> {
       // Wait for synchronous lwIP operations to complete to prevent reentrancy issues
       // This also gives the consumer a chance to start listening before we enqueue the first frame
       await nextMicrotask();
+      if (this.disposedError) return;
 
       const tapInterface = this.interfaces.get(handle);
 
@@ -133,6 +136,14 @@ export class TapBindings extends Bindings<TapImports, TapExports> {
         .receiveFrame(new Uint8Array(frame));
     },
   };
+
+  override dispose(error?: Error) {
+    super.dispose(error);
+    for (const netInterface of this.interfaces.values()) {
+      tapInterfaceHooks.getInner(netInterface).dispose(this.disposedError!);
+    }
+    this.interfaces.clear();
+  }
 
   async create(options: TapInterfaceOptions) {
     const macAddress = options.mac
@@ -173,9 +184,14 @@ export class TapBindings extends Bindings<TapImports, TapExports> {
   }
 }
 
-export class VirtualTapInterface implements TapInterface {
+export class VirtualTapInterface
+  extends VirtualNetworkInterface
+  implements TapInterface
+{
   #readableController?: ReadableStreamController<Uint8Array>;
   #isListening = false;
+  #disposed = false;
+  #writableController?: WritableStreamDefaultController;
 
   readonly type = 'tap' as const;
   get mac(): MacAddress {
@@ -191,11 +207,20 @@ export class VirtualTapInterface implements TapInterface {
   writable: WritableStream<Uint8Array>;
 
   constructor() {
+    super();
     tapInterfaceHooks.setInner(this, {
+      dispose: (error) => {
+        if (this.#disposed) return;
+        this.#disposed = true;
+        try {
+          this.#readableController?.close();
+        } catch {}
+        this.#writableController?.error(error);
+      },
       receiveFrame: async (frame: Uint8Array<ArrayBuffer>) => {
         // Do not buffer frames until the consumer signals intent
         // to listen - otherwise memory will grow indefinitely
-        if (!this.#isListening) {
+        if (this.#disposed || !this.#isListening) {
           return;
         }
 
@@ -219,6 +244,9 @@ export class VirtualTapInterface implements TapInterface {
     });
 
     this.writable = new WritableStream({
+      start: (controller) => {
+        this.#writableController = controller;
+      },
       write: (packet) => {
         try {
           tapInterfaceHooks.getOuter(this).sendFrame(packet);

@@ -7,11 +7,17 @@ import type {
 } from '@tcpip/transport';
 import type { IPv4Address, IPv4Cidr, MacAddress } from '@tcpip/wire';
 
-export type UdpDatagram = Datagram;
+export type IpCidr = string;
+
+export type UdpDatagram = Datagram & {
+  /** Destination endpoint on received datagrams. */
+  readonly local?: IpEndpoint;
+};
 
 export type UdpSocketOptions = DatagramSocketOptions;
 
 export type UdpSocket = DuplexStream<UdpDatagram> & {
+  readonly local: IpEndpoint;
   close(): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterator<UdpDatagram>;
 };
@@ -20,7 +26,14 @@ export type TcpListenerOptions = StreamListenOptions;
 
 export type TcpConnectionOptions = StreamConnectOptions;
 
+export type IpEndpoint = {
+  address: string;
+  port: number;
+};
+
 export type TcpConnection = DuplexStream<Uint8Array> & {
+  readonly local: IpEndpoint;
+  readonly remote: IpEndpoint;
   close(): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterator<Uint8Array>;
 };
@@ -86,7 +99,41 @@ export type LoopbackInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type LoopbackInterface = {
+export type InterfaceConfiguration = {
+  readonly addresses: readonly IpCidr[];
+  readonly mtu: number;
+  addAddress(cidr: IpCidr): Promise<void>;
+  removeAddress(cidr: IpCidr): Promise<void>;
+  setMtu(mtu: number): Promise<void>;
+  setRouterAdvertisements(
+    options: RouterAdvertisementOptions | null
+  ): Promise<void>;
+};
+
+export type RouterAdvertisementPrefix = {
+  /** Canonical IPv6 /64 advertised for SLAAC. */
+  prefix: IpCidr;
+  /** Valid lifetime in seconds. Defaults to 86400. */
+  validLifetime?: number;
+  /** Preferred lifetime in seconds. Defaults to 14400. */
+  preferredLifetime?: number;
+  /** Advertise this prefix only in the initial RA burst. */
+  initialOnly?: boolean;
+};
+
+export type RouterAdvertisementOptions =
+  | {
+      /** Shorthand for one prefix with the default lifetimes. */
+      prefix: IpCidr;
+      prefixes?: never;
+    }
+  | {
+      /** Prefix Information options to advertise, in wire order. */
+      prefixes: readonly RouterAdvertisementPrefix[];
+      prefix?: never;
+    };
+
+export type LoopbackInterface = InterfaceConfiguration & {
   readonly type: 'loopback';
   readonly ip?: IPv4Address;
   readonly netmask?: IPv4Address;
@@ -96,7 +143,7 @@ export type TunInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type TunInterface = {
+export type TunInterface = InterfaceConfiguration & {
   readonly type: 'tun';
   readonly ip?: IPv4Address;
   readonly netmask?: IPv4Address;
@@ -111,7 +158,7 @@ export type TapInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type TapInterface = {
+export type TapInterface = InterfaceConfiguration & {
   readonly type: 'tap';
   readonly mac: MacAddress;
   readonly ip?: IPv4Address;
@@ -128,7 +175,7 @@ export type BridgeInterfaceOptions = {
   ip?: IPv4Cidr;
 };
 
-export type BridgeInterface = {
+export type BridgeInterface = InterfaceConfiguration & {
   readonly type: 'bridge';
   readonly mac: MacAddress;
   readonly ip?: IPv4Address;
@@ -141,6 +188,35 @@ export type NetworkInterface =
   | TapInterface
   | BridgeInterface;
 
+export type RouteSource = 'connected' | 'static';
+
+export type RouteSpec = {
+  destination: string;
+  via: NetworkInterface;
+  metric?: number;
+  /** @internal Connected routes are installed by interface address management. */
+  source?: RouteSource;
+};
+
+export type RouteSnapshot = {
+  family: 4 | 6;
+  destination: string;
+  prefixLength: number;
+  via: NetworkInterface;
+  metric: number;
+  source: RouteSource;
+};
+
+export type RouteHandle = {
+  dispose(): void;
+};
+
+export type Routes = {
+  add(spec: RouteSpec): RouteHandle;
+  list(): readonly RouteSnapshot[];
+  lookup(address: string): RouteSnapshot | null;
+};
+
 export type NetworkInterfaces = Iterable<NetworkInterface> & {
   createLoopback(options: LoopbackInterfaceOptions): Promise<LoopbackInterface>;
   createTun(options: TunInterfaceOptions): Promise<TunInterface>;
@@ -150,11 +226,17 @@ export type NetworkInterfaces = Iterable<NetworkInterface> & {
 };
 
 export type NetworkStack = {
+  /**
+   * Terminal shutdown. Stops packet processing and settles owned sockets and
+   * pending operations without waiting for peers. Safe to call repeatedly.
+   */
+  dispose(): Promise<void>;
   readonly ready: Promise<void>;
   readonly tcp: TcpTransport;
   readonly udp: UdpTransport;
   readonly ping: PingApi;
   readonly interfaces: NetworkInterfaces;
+  readonly routes: Routes;
 
   /**
    * @deprecated Use `stack.interfaces.createLoopback()` instead.

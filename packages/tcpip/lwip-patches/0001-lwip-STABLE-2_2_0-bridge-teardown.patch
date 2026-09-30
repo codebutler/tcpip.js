@@ -1,0 +1,76 @@
+diff --git a/src/include/netif/bridgeif.h b/src/include/netif/bridgeif.h
+index f4f8cf1..76c63ed 100644
+--- a/src/include/netif/bridgeif.h
++++ b/src/include/netif/bridgeif.h
+@@ -92,6 +92,7 @@ typedef struct bridgeif_initdata_s {
+ #define BRIDGEIF_INITDATA2(max_ports, max_fdb_dynamic_entries, max_fdb_static_entries, e0, e1, e2, e3, e4, e5) {{e0, e1, e2, e3, e4, e5}, max_ports, max_fdb_dynamic_entries, max_fdb_static_entries}
+
+ err_t bridgeif_init(struct netif *netif);
++void  bridgeif_deinit(struct netif *bridgeif); /* tcpip.js fix pc#433 */
+ err_t bridgeif_add_port(struct netif *bridgeif, struct netif *portif);
+ err_t bridgeif_fdb_add(struct netif *bridgeif, const struct eth_addr *addr, bridgeif_portmask_t ports);
+ err_t bridgeif_fdb_remove(struct netif *bridgeif, const struct eth_addr *addr);
+@@ -100,6 +101,7 @@ err_t bridgeif_fdb_remove(struct netif *bridgeif, const struct eth_addr *addr);
+ void                bridgeif_fdb_update_src(void *fdb_ptr, struct eth_addr *src_addr, u8_t port_idx);
+ bridgeif_portmask_t bridgeif_fdb_get_dst_ports(void *fdb_ptr, struct eth_addr *dst_addr);
+ void*               bridgeif_fdb_init(u16_t max_fdb_entries);
++void                bridgeif_fdb_deinit(void *fdb_ptr); /* tcpip.js fix pc#433 */
+
+ #if BRIDGEIF_PORT_NETIFS_OUTPUT_DIRECT
+ #ifndef BRIDGEIF_DECL_PROTECT
+diff --git a/src/netif/bridgeif.c b/src/netif/bridgeif.c
+index 2dc88fc..2671a3d 100644
+--- a/src/netif/bridgeif.c
++++ b/src/netif/bridgeif.c
+@@ -516,6 +516,28 @@ bridgeif_init(struct netif *netif)
+   return ERR_OK;
+ }
+
++/**
++ * tcpip.js fix (pc#433): counterpart to bridgeif_init(). Upstream lwIP has no
++ * bridge teardown, so netif_remove() on a bridge left its dynamic FDB's
++ * self-rearming bridgeif_age_tmr sys_timeout armed forever — leaking a
++ * MEMP_SYS_TIMEOUT slot per bridge (the pool has headroom for exactly one) and
++ * firing on freed FDB memory. Cancel the timer + free the FDB and the private
++ * state. Call BEFORE netif_remove()/freeing the netif.
++ */
++void
++bridgeif_deinit(struct netif *netif)
++{
++  bridgeif_private_t *br;
++  if (netif == NULL || netif->state == NULL) {
++    return;
++  }
++  br = (bridgeif_private_t *)netif->state;
++  bridgeif_fdb_deinit(br->fdbd);
++  br->fdbd = NULL;
++  mem_free(br);
++  netif->state = NULL;
++}
++
+ /**
+  * @ingroup bridgeif
+  * Add a port to the bridge
+diff --git a/src/netif/bridgeif_fdb.c b/src/netif/bridgeif_fdb.c
+index 2f052ec..7509ea4 100644
+--- a/src/netif/bridgeif_fdb.c
++++ b/src/netif/bridgeif_fdb.c
+@@ -210,3 +210,18 @@ bridgeif_fdb_init(u16_t max_fdb_entries)
+
+   return fdb;
+ }
++
++/** tcpip.js fix (pc#433): tear down a dynamic FDB. bridgeif_fdb_init() arms a
++ * self-rearming sys_timeout(bridgeif_age_tmr) that upstream never cancels, so
++ * removing a bridge leaked its MEMP_SYS_TIMEOUT slot (and left the timer firing
++ * on freed FDB memory). Cancel the timer and free the FDB. */
++void
++bridgeif_fdb_deinit(void *fdb_ptr)
++{
++  bridgeif_dfdb_t *fdb = (bridgeif_dfdb_t *)fdb_ptr;
++  if (fdb == NULL) {
++    return;
++  }
++  sys_untimeout(bridgeif_age_tmr, fdb);
++  mem_free(fdb);
++}

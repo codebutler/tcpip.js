@@ -1,4 +1,5 @@
 export { createStack } from './stack.js';
+export { NetworkError, type NetworkErrorCode } from './network-error.js';
 export type {
   BridgeInterface,
   BridgeInterfaceOptions,
@@ -7,6 +8,11 @@ export type {
   NetworkInterface,
   NetworkInterfaces,
   NetworkStack,
+  RouteHandle,
+  RouteSnapshot,
+  RouteSource,
+  RouteSpec,
+  Routes,
   PingProbeOptions,
   PingApi,
   PingReply,

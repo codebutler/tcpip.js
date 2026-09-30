@@ -74,15 +74,26 @@ export class UniquePointer extends Number {
  * Map that allows waiting for changes to values.
  */
 export class EventMap<K, V> extends Map<K, V> {
-  #listeners = new Map<K, Set<(value: V) => void>>();
+  #listeners = new Map<
+    K,
+    Set<{ resolve(value: V): void; reject(error: Error): void }>
+  >();
+
+  rejectAll(error: Error) {
+    for (const listeners of this.#listeners.values()) {
+      for (const listener of listeners) listener.reject(error);
+    }
+    this.#listeners.clear();
+    this.clear();
+  }
 
   /**
    * Waits for the next `set()` call on the given key.
    */
   wait(key: K): Promise<V> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const listeners = this.#listeners.get(key) ?? new Set();
-      listeners.add(resolve);
+      listeners.add({ resolve, reject });
       this.#listeners.set(key, listeners);
     });
   }
@@ -94,7 +105,7 @@ export class EventMap<K, V> extends Map<K, V> {
 
     if (listeners) {
       for (const listener of listeners) {
-        listener(value);
+        listener.resolve(value);
         listeners.delete(listener);
       }
     }

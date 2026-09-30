@@ -47,6 +47,9 @@ struct netif *create_bridge_interface(const uint8_t mac_address[6], const uint8_
 
   netif_set_link_up(netif);
   netif_set_up(netif);
+#if LWIP_IPV6
+  netif_create_ip6_linklocal_address(netif, 1);
+#endif
 
   for (uint8_t i = 0; i < ports_num; i++) {
     bridgeif_add_port(netif, ports[i]);
@@ -57,6 +60,12 @@ struct netif *create_bridge_interface(const uint8_t mac_address[6], const uint8_
 
 EXPORT("remove_bridge_interface")
 void remove_bridge_interface(struct netif *netif) {
+  // pc#433: cancel the bridge FDB's aging sys_timeout and free its private
+  // state before removing the netif. Without this, netif_remove() leaks the
+  // bridge's MEMP_SYS_TIMEOUT slot (the pool has room for exactly one bridge),
+  // so the first sys_timeout() after a remove — e.g. TCP arming a timer on an
+  // inbound SYN — traps the wasm ("pool MEMP_SYS_TIMEOUT is empty").
+  bridgeif_deinit(netif);
   netif_remove(netif);
   free(netif);
 }

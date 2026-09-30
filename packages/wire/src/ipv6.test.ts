@@ -78,6 +78,11 @@ describe('serializeIPv6Address', () => {
 });
 
 describe('compressIPv6', () => {
+  test('compresses the unspecified address', () => {
+    const ip = '0000:0000:0000:0000:0000:0000:0000:0000';
+    expect(compressIPv6(ip)).toBe('::');
+  });
+
   test('compresses an IPv6 address with leading zeros', () => {
     const ip = '0000:0000:0000:0000:0000:0000:0000:0001';
     const compressed = compressIPv6(ip);

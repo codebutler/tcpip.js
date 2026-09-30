@@ -1,3 +1,4 @@
+import { NetworkError } from '../network-error.js';
 import { UniquePointer } from '../util.js';
 import type {
   CommonExports,
@@ -9,9 +10,25 @@ import type {
 export abstract class Bindings<Imports, Exports> {
   #exports?: Exports & CommonExports & WasiExports & SysExports;
 
+  protected disposedError?: Error;
+
+  protected assertActive() {
+    if (this.disposedError) throw this.disposedError;
+  }
+
+  // A stack owns the whole WASM instance. Terminal disposal releases its
+  // exports rather than waiting for TCP FIN/ACK or removing individual PCBs.
+  dispose(
+    error: Error = new NetworkError('ENETDOWN', 'network stack disposed')
+  ) {
+    this.disposedError ??= error;
+    this.#exports = undefined;
+  }
+
   abstract imports: Imports;
 
   get exports(): Exports & CommonExports & WasiExports & SysExports {
+    this.assertActive();
     if (!this.#exports) {
       throw new Error('exports were not registered');
     }
@@ -22,6 +39,7 @@ export abstract class Bindings<Imports, Exports> {
    * Register the exports object from the wasm module.
    */
   register(exports: Exports & CommonExports & WasiExports & SysExports) {
+    this.assertActive();
     this.#exports = exports;
   }
 

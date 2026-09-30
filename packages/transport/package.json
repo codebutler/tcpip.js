@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chipmk/tcpip.js.git",
+    "url": "https://github.com/codebutler/tcpip.js.git",
     "directory": "packages/transport"
   },
   "main": "dist/index.cjs",

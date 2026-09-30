@@ -10,6 +10,7 @@ import {
 import type { BridgeInterface, BridgeInterfaceOptions } from '../types.js';
 import { Hooks } from '../util.js';
 import { Bindings } from './base.js';
+import { VirtualNetworkInterface } from './network-interface.js';
 import { tapInterfaceHooks } from './tap-interface.js';
 import type { Pointer } from './types.js';
 
@@ -49,6 +50,11 @@ export class BridgeBindings extends Bindings<BridgeImports, BridgeExports> {
   interfaces = new Map<BridgeInterfaceHandle, BridgeInterface>();
 
   imports = {};
+
+  override dispose(error?: Error) {
+    this.interfaces.clear();
+    super.dispose(error);
+  }
 
   async create(options: BridgeInterfaceOptions) {
     const macAddress = options.mac
@@ -128,7 +134,10 @@ export class BridgeBindings extends Bindings<BridgeImports, BridgeExports> {
   }
 }
 
-export class VirtualBridgeInterface implements BridgeInterface {
+export class VirtualBridgeInterface
+  extends VirtualNetworkInterface
+  implements BridgeInterface
+{
   readonly type = 'bridge';
   get mac(): MacAddress {
     return bridgeInterfaceHooks.getOuter(this).getMacAddress();

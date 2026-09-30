@@ -8,4 +8,6 @@ SRC_FILES= \
 	$(SRC_DIR)/tcp.c \
 	$(SRC_DIR)/udp.c \
 	$(SRC_DIR)/icmp.c \
-	$(SRC_DIR)/arch.c
+	$(SRC_DIR)/arch.c \
+	$(SRC_DIR)/routes.c \
+	$(SRC_DIR)/ipv6_helpers.c

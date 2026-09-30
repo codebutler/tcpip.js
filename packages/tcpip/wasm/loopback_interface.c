@@ -11,10 +11,24 @@ static err_t netif_loop_output_ipv4(struct netif *netif, struct pbuf *p, const i
   return netif_loop_output(netif, p);
 }
 
+#if LWIP_IPV6
+static err_t netif_loop_output_ipv6(struct netif *netif, struct pbuf *p, const ip6_addr_t *addr) {
+  LWIP_UNUSED_ARG(addr);
+  return netif_loop_output(netif, p);
+}
+#endif
+
 static err_t netif_loopif_init(struct netif *netif) {
   netif->name[0] = 'l';
   netif->name[1] = 'o';
   netif->output = netif_loop_output_ipv4;
+#if LWIP_IPV6
+  netif->output_ip6 = netif_loop_output_ipv6;
+#endif
+  netif->mtu = 65535;
+#if LWIP_IPV6 && LWIP_ND6_ALLOW_RA_UPDATES
+  netif->mtu6 = 65535;
+#endif
   NETIF_SET_CHECKSUM_CTRL(netif, NETIF_CHECKSUM_DISABLE_ALL);
   return ERR_OK;
 }

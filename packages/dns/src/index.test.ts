@@ -24,6 +24,24 @@ describe('createDns', () => {
     expect(ip).toBe('10.0.0.1');
   });
 
+  test('client prefers AAAA records', async () => {
+    const stack = await createStack();
+    const { lookup, serve } = await createDns(stack.udp);
+
+    await serve({
+      request: async ({ name, type }) => {
+        if (name === 'example.com' && type === 'AAAA') {
+          return { type, ip: '2001:db8::1', ttl: 300 };
+        }
+      },
+    });
+
+    await expect(lookup('example.com')).resolves.toBe('2001:db8::1');
+    await expect(lookup('example.com', { family: 6 })).resolves.toBe(
+      '2001:db8::1'
+    );
+  });
+
   test('throws if no records found', async () => {
     const stack = await createStack();
     const { lookup, serve } = await createDns(stack.udp);
