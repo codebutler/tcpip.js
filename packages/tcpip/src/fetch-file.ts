@@ -16,8 +16,9 @@ export async function fetchFile(input: string | URL, type: string) {
 
 async function fetchFileNode(input: string | URL, type: string) {
   const fs = await import('node:fs');
-  const { Readable } = await import('node:stream');
-  const nodeStream = fs.createReadStream(input);
-  const stream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
-  return new Response(stream, { headers: { 'Content-Type': type } });
+  // The finite WASM asset does not need a Node-to-Web stream adapter.
+  // Browser-target bundles can substitute node:stream with a browser shim,
+  // even though this branch executes only in a native host.
+  const bytes = await fs.promises.readFile(input);
+  return new Response(bytes, { headers: { 'Content-Type': type } });
 }

@@ -18,7 +18,11 @@ import { createStack } from './index.js';
 describe('general', () => {
   test('loopback interface is created by default', async () => {
     const stack = await createStack();
-    expect(Array.from(stack.interfaces)).toHaveLength(1);
+    const interfaces = Array.from(stack.interfaces);
+    expect(interfaces).toHaveLength(1);
+    expect(interfaces[0]?.addresses).toEqual(['127.0.0.1/8', '::1/128']);
+    expect(stack.routes.lookup('127.0.0.1')?.via).toBe(interfaces[0]);
+    expect(stack.routes.lookup('::1')?.via).toBe(interfaces[0]);
   });
 
   test('can create a stack without a loopback interface', async () => {

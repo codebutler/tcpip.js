@@ -25,6 +25,7 @@ export default defineWorkspace([
     },
     test: {
       name: 'browser',
+      exclude: ['src/**/*.node.test.ts'],
       include: ['src/**/*.{test,spec}.ts'],
       setupFiles: 'test/setup.ts',
       browser: {

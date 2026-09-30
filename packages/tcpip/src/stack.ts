@@ -163,16 +163,6 @@ export class VirtualNetworkStack implements NetworkStack {
 
     // Initialize the stack
     this.ready = this.#init();
-
-    // Post-init setup
-    this.ready.then(async () => {
-      if (this.#options.initializeLoopback) {
-        const loopback = await this.interfaces.createLoopback({
-          ip: '127.0.0.1/8',
-        });
-        await loopback.addAddress('::1/128');
-      }
-    });
   }
 
   async #init() {
@@ -225,6 +215,15 @@ export class VirtualNetworkStack implements NetworkStack {
     // Our WASM binary is a WASI reactor module (ie. a lib),
     // so we call `initialize()` instead of `start()`.
     wasi.initialize(wasmInstance);
+
+    // Readiness includes the default addresses and connected routes. Use the
+    // registered bindings directly: the public interface API awaits ready.
+    if (this.#options.initializeLoopback) {
+      const ip = '127.0.0.1/8';
+      const loopback = await this.#loopbackBindings.create({ ip });
+      this.#attachInterface(loopback, ip);
+      await loopback.addAddress('::1/128');
+    }
 
     // Call lwIP's main loop regularly (required in NO_SYS mode)
     // Used to process queued packets (eg. loopback) and expired timeouts
