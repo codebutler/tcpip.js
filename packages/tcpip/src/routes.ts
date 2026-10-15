@@ -75,11 +75,19 @@ export class RouteTable implements Routes {
   }
 
   lookup(address: string): RouteSnapshot | null {
+    return this.lookupOnInterface(address);
+  }
+
+  lookupOnInterface(
+    address: string,
+    netInterface?: NetworkInterface
+  ): RouteSnapshot | null {
     const parsed = parseAddress(address);
     const match = this.#routes
       .filter(
         (route) =>
           route.family === parsed.family &&
+          (netInterface === undefined || route.via === netInterface) &&
           prefixMatches(parsed.bytes, route.bytes, route.prefixLength)
       )
       .sort(compareRoutes)[0];

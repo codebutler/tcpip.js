@@ -24,7 +24,10 @@ export type UdpSocket = DuplexStream<UdpDatagram> & {
 
 export type TcpListenerOptions = StreamListenOptions;
 
-export type TcpConnectionOptions = StreamConnectOptions;
+export type TcpConnectionOptions = StreamConnectOptions & {
+  /** Bind the outbound connection to an interface owned by this stack. */
+  interface?: NetworkInterface;
+};
 
 export type IpEndpoint = {
   address: string;
