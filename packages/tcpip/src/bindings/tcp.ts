@@ -6,6 +6,7 @@ import { NetworkError } from '../network-error.js';
 import type { RouteTable } from '../routes.js';
 import type {
   IpEndpoint,
+  NetworkInterface,
   TcpConnection,
   TcpConnectionOptions,
   TcpListener,
@@ -80,7 +81,8 @@ export type TcpExports = {
   create_tcp_connection(
     family: number,
     host: Pointer,
-    port: number
+    port: number,
+    netif: number
   ): TcpConnectionHandle;
   close_tcp_connection(handle: TcpConnectionHandle): number;
   shutdown_tcp_connection_write(handle: TcpConnectionHandle): number;
@@ -109,6 +111,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   #tcpCloseAcks: AckWaiters = new Map();
   #dnsClient: DnsClient;
   #routes: RouteTable;
+  #interfaceHandle: (netInterface: NetworkInterface) => number;
 
   async #resolveHost(host: string) {
     try {
@@ -119,10 +122,15 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     }
   }
 
-  constructor(dnsClient: DnsClient, routes: RouteTable) {
+  constructor(
+    dnsClient: DnsClient,
+    routes: RouteTable,
+    interfaceHandle: (netInterface: NetworkInterface) => number
+  ) {
     super();
     this.#dnsClient = dnsClient;
     this.#routes = routes;
+    this.#interfaceHandle = interfaceHandle;
   }
 
   override dispose(error?: Error) {
@@ -367,7 +375,11 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     const host = await this.#resolveHost(options.host);
     this.assertActive();
     const address = formatAddress(host.family, host.bytes);
-    if (!this.#routes.lookup(address)) {
+    const netif =
+      options.interface === undefined
+        ? 0
+        : this.#interfaceHandle(options.interface);
+    if (!this.#routes.lookupOnInterface(address, options.interface)) {
       throw new NetworkError('ENETUNREACH', `no route to ${address}`);
     }
     using hostPtr = this.copyToMemory(host.bytes);
@@ -375,7 +387,8 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     const handle = this.exports.create_tcp_connection(
       host.family,
       hostPtr,
-      options.port
+      options.port,
+      netif
     );
 
     if (Number(handle) === 0) {

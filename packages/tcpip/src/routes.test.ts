@@ -41,6 +41,18 @@ describe('RouteTable', () => {
     expect(routes.lookup('10.2.3.4')?.via).toBe(fast);
   });
 
+  test('selects an explicit interface when IPv6 route prefixes overlap', () => {
+    const routes = new RouteTable();
+    const first = tun('first');
+    const second = tun('second');
+    routes.add({ destination: 'fe80::/64', via: first });
+    routes.add({ destination: 'fe80::/64', via: second });
+
+    expect(routes.lookup('fe80::2')?.via).toBe(first);
+    expect(routes.lookupOnInterface('fe80::2', second)?.via).toBe(second);
+    expect(routes.lookupOnInterface('fe80::2', tun('unrouted'))).toBeNull();
+  });
+
   test('rejects an exact duplicate route', () => {
     const routes = new RouteTable();
     const first = tun('first');

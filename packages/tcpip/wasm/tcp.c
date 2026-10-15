@@ -134,7 +134,8 @@ err_t connected_callback(void *arg, struct tcp_pcb *conn, err_t err) {
 }
 
 EXPORT("create_tcp_connection")
-struct tcp_pcb *create_tcp_connection(uint8_t family, const uint8_t *host, int port) {
+struct tcp_pcb *create_tcp_connection(uint8_t family, const uint8_t *host, int port,
+                                       struct netif *netif) {
   struct tcp_pcb *conn = tcp_new_ip_type(
       family == TCPIP_AF_IPV6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4);
 
@@ -146,6 +147,10 @@ struct tcp_pcb *create_tcp_connection(uint8_t family, const uint8_t *host, int p
   if (tcpip_ip_addr_from_bytes(family, host, &ipaddr) != ERR_OK) {
     tcp_close(conn);
     return NULL;
+  }
+
+  if (netif != NULL) {
+    tcp_bind_netif(conn, netif);
   }
 
   err_t err = tcp_connect(conn, &ipaddr, port, connected_callback);

@@ -178,7 +178,11 @@ export class VirtualNetworkStack implements NetworkStack {
     this.#dnsClient = new DnsClient(this.udp, {
       nameServer: options.nameServer ?? { ip: '127.0.0.1', port: 53 },
     });
-    this.#tcpBindings = new TcpBindings(this.#dnsClient, this.routes);
+    this.#tcpBindings = new TcpBindings(
+      this.#dnsClient,
+      this.routes,
+      (netInterface) => this.#interfaceHandle(netInterface)
+    );
     this.#udpBindings = new UdpBindings(this.#dnsClient, this.routes);
     this.#icmpBindings = new IcmpBindings(this.#dnsClient, this.routes);
 

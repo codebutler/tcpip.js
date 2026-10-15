@@ -488,6 +488,18 @@ const connection = await stack.tcp.connect({
 
 The `host` property can be an IP address or hostname. If it's a hostname, the stack will attempt to resolve it to an IP address using the [embedded DNS resolver](#embedded-resolver).
 
+When a destination can be reached through more than one interface, pass an interface from the same stack to select the outbound link. This is necessary for ambiguous IPv6 link-local destinations such as `fe80::2`:
+
+```ts
+const connection = await stack.tcp.connect({
+  host: 'fe80::2',
+  port: 80,
+  interface: tunInterface,
+});
+```
+
+The chosen interface must have a route to the destination. A missing route rejects with `ENETUNREACH`; an interface from another stack is rejected.
+
 ### `stack.tcp.listen()`
 
 To create a TCP server that listens for incoming connections, call `stack.tcp.listen()`:
