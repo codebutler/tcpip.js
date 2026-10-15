@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.5](https://github.com/codebutler/tcpip.js/compare/@tcpip/v86-v0.2.4...@tcpip/v86-v0.2.5) (2026-10-15)
+
+
+### Features
+
+* **dhcp:** harden lease handling + v86 integration tests ([f60bd2f](https://github.com/codebutler/tcpip.js/commit/f60bd2f609fe6fc4f337b8655145864b442d5c8b))
+* **dhcp:** harden lease handling + v86 integration tests ([b33b002](https://github.com/codebutler/tcpip.js/commit/b33b002d7ff59456eaa31e85469e280b0d47c527))
+* v86 integration tests ([afff321](https://github.com/codebutler/tcpip.js/commit/afff3210736775058de44d7533004e7790543213))
+* v86 integration tests ([62b9d8a](https://github.com/codebutler/tcpip.js/commit/62b9d8a0886b990257ca0c55f26e878fb4540d26))
+* **v86:** use new namespaced stack api ([188a7f3](https://github.com/codebutler/tcpip.js/commit/188a7f329907062aa25e427e2d2e577a9bfe6995))
+
+
+### Bug Fixes
+
+* include disposable lib for declaration builds ([294f0cd](https://github.com/codebutler/tcpip.js/commit/294f0cdeeeb7ce22929997278f364436ad08e389))
+* resolve type cycles and export tcpip types ([7ffee3b](https://github.com/codebutler/tcpip.js/commit/7ffee3b427742a73324caacbbff601ba489b4386))
+* **tcpip:** own native loading, readiness, and stack disposal ([#1](https://github.com/codebutler/tcpip.js/issues/1)) ([db03c2b](https://github.com/codebutler/tcpip.js/commit/db03c2b13a0de4ddf87608f26748bc2bc0250489))
+* typecheck ([3acd38d](https://github.com/codebutler/tcpip.js/commit/3acd38d979c98dcfa59fe25c5f90de125e8adb3f))
+* types and lints ([6ed8111](https://github.com/codebutler/tcpip.js/commit/6ed81111bee7af554947d8c2a30edcd482b52284))
+* v86 tcpip dev dependency ([428a949](https://github.com/codebutler/tcpip.js/commit/428a94931e175163ab792e79785bd95c58f01501))
+
 ## [0.2.4](https://github.com/chipmk/tcpip.js/compare/@tcpip/v86-v0.2.3...@tcpip/v86-v0.2.4) (2026-05-28)
 
 

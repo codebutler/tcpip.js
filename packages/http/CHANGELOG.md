@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/codebutler/tcpip.js/compare/@tcpip/http-v0.2.1...@tcpip/http-v0.3.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **http:** accept StreamTransport instead of NetworkStack
+
+### Features
+
+* **http:** accept StreamTransport instead of NetworkStack ([e0be106](https://github.com/codebutler/tcpip.js/commit/e0be106939c2ce0a75bd0f38698b0eab36e8721f))
+* **http:** add http support ([1da9342](https://github.com/codebutler/tcpip.js/commit/1da9342d6b1e055dc7ce7ee338a2961235993066))
+
+
+### Bug Fixes
+
+* **http:** resolve parser wasm from package root ([b477549](https://github.com/codebutler/tcpip.js/commit/b477549291ce9b3025a03e8b859fe969ffd6a792))
+* **http:** resolve parser wasm from package root ([f6754fc](https://github.com/codebutler/tcpip.js/commit/f6754fc352c194bf8d1180fd3d2000e3dd994bbe))
+* **tcpip:** own native loading, readiness, and stack disposal ([#1](https://github.com/codebutler/tcpip.js/issues/1)) ([db03c2b](https://github.com/codebutler/tcpip.js/commit/db03c2b13a0de4ddf87608f26748bc2bc0250489))
+
 ## [0.2.1](https://github.com/chipmk/tcpip.js/compare/@tcpip/http-v0.2.0...@tcpip/http-v0.2.1) (2026-06-06)
 
 
