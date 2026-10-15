@@ -125,9 +125,7 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
   constructor(
     dnsClient: DnsClient,
     routes: RouteTable,
-    interfaceHandle: (netInterface: NetworkInterface) => number = () => {
-      throw new Error('no interface resolver configured');
-    }
+    interfaceHandle: (netInterface: NetworkInterface) => number
   ) {
     super();
     this.#dnsClient = dnsClient;

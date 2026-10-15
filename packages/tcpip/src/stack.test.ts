@@ -709,7 +709,8 @@ describe('tcp', () => {
       } as unknown as ConstructorParameters<typeof TcpBindings>[0],
       {
         lookup: vi.fn(),
-      } as unknown as ConstructorParameters<typeof TcpBindings>[1]
+      } as unknown as ConstructorParameters<typeof TcpBindings>[1],
+      vi.fn()
     );
     const memory = new WebAssembly.Memory({ initial: 1 });
     const data = new TextEncoder().encode('early data');
