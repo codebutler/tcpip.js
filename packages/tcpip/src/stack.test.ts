@@ -1346,6 +1346,50 @@ describe('tcp', () => {
     expect((await reader.read()).value).toEqual(new Uint8Array([6]));
   });
 
+  test('binds link-local TCP to the requested L3 interface', async () => {
+    const client = await createStack({ initializeLoopback: false });
+    const firstPeer = await createStack({ initializeLoopback: false });
+    const secondPeer = await createStack({ initializeLoopback: false });
+    const first = await client.interfaces.createTun({});
+    const second = await client.interfaces.createTun({});
+    const firstRemote = await firstPeer.interfaces.createTun({});
+    const secondRemote = await secondPeer.interfaces.createTun({});
+
+    await first.addAddress('fe80::1/64');
+    await second.addAddress('fe80::3/64');
+    await firstRemote.addAddress('fe80::2/64');
+    await secondRemote.addAddress('fe80::2/64');
+    first.readable.pipeTo(firstRemote.writable);
+    firstRemote.readable.pipeTo(first.writable);
+    second.readable.pipeTo(secondRemote.writable);
+    secondRemote.readable.pipeTo(second.writable);
+
+    const listener = await secondPeer.tcp.listen({
+      host: 'fe80::2',
+      port: 8080,
+    });
+    const [outbound, inbound] = await Promise.all([
+      client.tcp.connect({ host: 'fe80::2', port: 8080, interface: second }),
+      nextValue(listener),
+    ]);
+
+    expect(outbound.local.address).toBe('fe80::3');
+    expect(inbound.remote.address).toBe('fe80::3');
+    await expect(
+      client.tcp.connect({
+        host: 'fe80::2',
+        port: 8080,
+        interface: firstRemote,
+      })
+    ).rejects.toThrow(/does not belong/);
+
+    await Promise.all([
+      client.dispose(),
+      firstPeer.dispose(),
+      secondPeer.dispose(),
+    ]);
+  });
+
   test('derives the IPv6 TCP MSS from the selected interface MTU', async () => {
     const stack = await createStack({ initializeLoopback: false });
     const tunInterface = await stack.interfaces.createTun({});

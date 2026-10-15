@@ -6,11 +6,11 @@ import { NetworkError } from '../network-error.js';
 import type { RouteTable } from '../routes.js';
 import type {
   IpEndpoint,
+  NetworkInterface,
   TcpConnection,
   TcpConnectionOptions,
   TcpListener,
   TcpListenerOptions,
-  NetworkInterface,
 } from '../types.js';
 import { EventMap, Hooks, nextMicrotask } from '../util.js';
 import { Bindings } from './base.js';
@@ -82,7 +82,7 @@ export type TcpExports = {
     family: number,
     host: Pointer,
     port: number,
-    netif: Pointer | null
+    netif: number
   ): TcpConnectionHandle;
   close_tcp_connection(handle: TcpConnectionHandle): number;
   shutdown_tcp_connection_write(handle: TcpConnectionHandle): number;
@@ -377,9 +377,10 @@ export class TcpBindings extends Bindings<TcpImports, TcpExports> {
     const host = await this.#resolveHost(options.host);
     this.assertActive();
     const address = formatAddress(host.family, host.bytes);
-    const netif = options.interface === undefined
-      ? null
-      : this.#interfaceHandle(options.interface);
+    const netif =
+      options.interface === undefined
+        ? 0
+        : this.#interfaceHandle(options.interface);
     if (!this.#routes.lookupOnInterface(address, options.interface)) {
       throw new NetworkError('ENETUNREACH', `no route to ${address}`);
     }
