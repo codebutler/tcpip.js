@@ -1359,10 +1359,10 @@ describe('tcp', () => {
     await second.addAddress('fe80::3/64');
     await firstRemote.addAddress('fe80::2/64');
     await secondRemote.addAddress('fe80::2/64');
-    first.readable.pipeTo(firstRemote.writable);
-    firstRemote.readable.pipeTo(first.writable);
-    second.readable.pipeTo(secondRemote.writable);
-    secondRemote.readable.pipeTo(second.writable);
+    void first.readable.pipeTo(firstRemote.writable).catch(() => undefined);
+    void firstRemote.readable.pipeTo(first.writable).catch(() => undefined);
+    void second.readable.pipeTo(secondRemote.writable).catch(() => undefined);
+    void secondRemote.readable.pipeTo(second.writable).catch(() => undefined);
 
     const listener = await secondPeer.tcp.listen({
       host: 'fe80::2',
